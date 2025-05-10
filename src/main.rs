@@ -4,7 +4,7 @@ use {
     rfd::FileDialog,
     std::path::PathBuf,
     thiserror::Error,
-    tracing::{debug, error, info},
+    tracing::{debug, error, info, warn},
     tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 
@@ -18,6 +18,10 @@ const UI_WINDOW_HEIGHT: f32 = 900.0;
 ///
 /// Includes all labels, buttons and colour picker
 const TOTAL_UI_ELEMENT_HEIGHT: f32 = 250.0;
+/// Max border size
+const MAX_BORDER_SIZE: f32 = 100.0;
+/// All supported image extensions
+const SUPPORTED_IMAGE_FORMATS: &[&'static str; 4] = &["png", "jpg", "jpeg", "bmp"];
 
 #[derive(Error, Debug)]
 enum Error {
@@ -68,14 +72,9 @@ impl eframe::App for ImageManipulatorApp<'_> {
             let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
             ui.horizontal(|ui| {
                 if ui.button("Load Image").clicked() {
-                    if let Some(image_path) = FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "bmp"]).pick_file() {
-                        self.filepath = Some(image_path.clone());
-                        let image_path = image_path.to_str().expect("Image path is UTF-8 string");
-                        debug!("Loading image: {image_path}");
-                        let image_dimensions = ImageReader::open(image_path).expect("Image is readable").into_dimensions().expect("Image dimensions exist");
-                        debug!("Image has dimensions: [{}, {}]", image_dimensions.0, image_dimensions.1);
-                        self.original_image_dimension = Some(Vec2::new(image_dimensions.0 as f32, image_dimensions.1 as f32));
-                        self.image = Some(Image::new(format!("file://{image_path}"))); // TODO: Windows file handling
+                    if let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file() {
+                        self.load_image_to_state(image_path);
+                        // TODO: Windows file handling
                     }
                 }
                 if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Reset selection")).clicked() {
@@ -324,7 +323,7 @@ impl ImageManipulatorApp<'_> {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label("Border width:");
-                ui.add(Slider::new(&mut self.border_size, 0.0..=40.0).drag_value_speed(1.0));
+                ui.add(Slider::new(&mut self.border_size, 0.0..=MAX_BORDER_SIZE).drag_value_speed(1.0));
                 ui.checkbox(&mut self.feather_border, "Feather boarder");
                 ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
                 ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
@@ -357,9 +356,20 @@ impl ImageManipulatorApp<'_> {
             });
         });
     }
+
+    fn load_image_to_state(&mut self, image_path: PathBuf) {
+        self.filepath = Some(image_path.clone());
+        let image_path = image_path.to_str().expect("Image path is UTF-8 string");
+        debug!("Loading image: {image_path}");
+        let image_dimensions = ImageReader::open(image_path).expect("Image is readable").into_dimensions().expect("Image dimensions exist");
+        debug!("Image has dimensions: [{}, {}]", image_dimensions.0, image_dimensions.1);
+        self.original_image_dimension = Some(Vec2::new(image_dimensions.0 as f32, image_dimensions.1 as f32));
+        self.image = Some(Image::new(format!("file://{image_path}")));
+    }
 }
 
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let custom_format = fmt::format().with_target(false).with_ansi(true).with_file(true).with_level(true).with_line_number(true).compact();
     let fmt_layer = fmt::layer().event_format(custom_format);
@@ -368,12 +378,30 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT]).with_resizable(true).with_maximize_button(true), ..Default::default() };
 
     info!("Starting application [Version: {VERSION}]");
+    let mut default_state = Box::<ImageManipulatorApp>::default();
+    match args.len() {
+        1 => {
+            // normal operation, we select the image manually
+        }
+        2 => {
+            // we check if the first argument is a valid path to an image, so we can load it immed
+            let file = args[1].as_str();
+            for ext in SUPPORTED_IMAGE_FORMATS {
+                if file.to_ascii_lowercase().ends_with(ext) {
+                    default_state.load_image_to_state(PathBuf::from(file));
+                    break;
+                }
+            }
+        }
+        _ => warn!("Too many arguments defined. Only one argument can be provided, the file path of the file to be used."),
+    }
+
     eframe::run_native(
         APPLICATION_NAME,
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::<ImageManipulatorApp>::default())
+            Ok(default_state)
         }),
     )
 }
