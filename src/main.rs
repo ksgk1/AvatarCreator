@@ -1,10 +1,10 @@
 use {
-    eframe::egui::{self, CentralPanel, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Vec2},
+    eframe::egui::{self, CentralPanel, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Ui, Vec2},
     image::{ImageReader, imageops::resize, ImageBuffer, Rgba, RgbaImage},
     rfd::FileDialog,
     std::path::PathBuf,
     thiserror::Error,
-    tracing::{error, info},
+    tracing::{debug, error, info},
     tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 
@@ -47,7 +47,7 @@ impl Default for ImageManipulatorApp<'_> {
             filepath: None,
             drag_start: None,
             drag_stop: None,
-            border_size: 0.0,
+            border_size: 1.0,
             border_colour: egui::Color32::WHITE,
             original_image_dimension: None,
             scaled_image_dimension: None,
@@ -62,7 +62,7 @@ impl Default for ImageManipulatorApp<'_> {
 }
 
 impl eframe::App for ImageManipulatorApp<'_> {
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+    #[allow(clippy::cognitive_complexity)]
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
         CentralPanel::default().show(ctx, |ui| {
             let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
@@ -71,128 +71,28 @@ impl eframe::App for ImageManipulatorApp<'_> {
                     if let Some(image_path) = FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "bmp"]).pick_file() {
                         self.filepath = Some(image_path.clone());
                         let image_path = image_path.to_str().expect("Image path is UTF-8 string");
+                        debug!("Loading image: {image_path}");
                         let image_dimensions = ImageReader::open(image_path).expect("Image is readable").into_dimensions().expect("Image dimensions exist");
+                        debug!("Image has dimensions: [{}, {}]", image_dimensions.0, image_dimensions.1);
                         self.original_image_dimension = Some(Vec2::new(image_dimensions.0 as f32, image_dimensions.1 as f32));
-                        self.image = Some(Image::new(format!("file://{image_path}")));
+                        self.image = Some(Image::new(format!("file://{image_path}"))); // TODO: Windows file handling
                     }
                 }
                 if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Reset selection")).clicked() {
                     self.drag_start = None;
                     self.drag_stop = None;
+                    debug!("Reset selection");
                 }
             });
 
             if self.filepath.is_some() {
                 ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        let image = self
-                            .image
-                            .clone()
-                            .expect("Image is readable")
-                            .sense(Sense::click_and_drag())
-                            .fit_to_original_size(1.0)
-                            .max_width(window_dimensions.x)
-                            .max_height(window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT);
-
-                        ui.label("Draw from the center out to create a preview.\nRight click to move selection.");
-                        let response = ui.add(image);
-                        self.scaled_image_dimension = Some(response.rect.size());
-
-                        let mut started_in_last_selection = false;
-                        // Generate start point when new selection is created by left-clicking.
-                        // If clicked on the previous selection, the old starting point is kept.
-                        if response.drag_started_by(egui::PointerButton::Primary) {
-                            let point = ui.input(|i| i.pointer.interact_pos().unwrap_or_default()) - response.rect.left_top().to_vec2();
-                            if let (Some(start), Some(stop)) = (self.drag_start, self.drag_stop) {
-                                // Check if started within selection
-                                if (point.distance(start)) <= start.distance(stop) {
-                                    started_in_last_selection = true;
-                                }
-                            }
-                            if !started_in_last_selection {
-                                self.drag_start = Some(point);
-                                self.drag_stop = None;
-                            }
-                        }
-
-                        if response.dragged_by(egui::PointerButton::Primary) {
-                            self.drag_stop = Some(ui.input(|i| i.pointer.interact_pos().unwrap_or_default()) - response.rect.left_top().to_vec2());
-                        }
-
-                        // Moving selection when using the right button
-                        if response.dragged_by(egui::PointerButton::Secondary) {
-                            if let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut()) {
-                                *start += response.drag_delta();
-                                *stop += response.drag_delta();
-                            }
-                        }
-
-                        match (self.drag_start, self.drag_stop) {
-                            (Some(start), Some(stop)) => {
-                                let painter = ui.painter_at(response.rect);
-
-                                // centre marker
-                                let radius = 1.0;
-                                let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
-                                painter.circle(circle_center, radius, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::RED));
-
-                                // offset the circle's position by the second image's top-left corner
-                                let center_to_outside_border = start.distance(stop);
-                                let diameter = center_to_outside_border * 2.0;
-                                let bounding_box = Rect::from_center_size(circle_center, Vec2 { x: diameter + 2.0 * self.border_size, y: diameter + 2.0 * self.border_size });
-                                painter.rect(bounding_box, CornerRadius::ZERO, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::GREEN), egui::StrokeKind::Outside);
-                                painter.circle(circle_center, center_to_outside_border, egui::Color32::TRANSPARENT, egui::Stroke::new(self.border_size, self.border_colour));
-                            }
-                            (Some(start), None) => {
-                                let painter = ui.painter_at(response.rect);
-
-                                // Offset the circle's position by the second image's top-left corner
-                                let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
-                                let radius = 1.0;
-
-                                painter.circle(circle_center, radius, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::RED));
-                            }
-                            (None, _) => {}
-                        }
-
-                        // After handling the drag and selection, generate a preview
-                        if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop) {
-                            // Generate preview image
-                            if let Ok((preview_image, preview_texture)) = self.generate_preview(ctx) {
-                                self.preview_texture = Some(preview_texture);
-                                self.preview_image = Some(preview_image);
-                            }
-                        }
-                    });
-
-                    // Preview panel
-                    if let Some(texture) = &self.preview_texture {
-                        ui.vertical(|ui| {
-                            ui.label("Preview:");
-                            ui.image(texture);
-                        });
-                    }
-
+                    // main image
+                    self.main_display_panel(ctx, window_dimensions, ui);
+                    // preview panel
+                    self.preview_panel(ui);
                 });
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label("Border width:");
-                        ui.add(Slider::new(&mut self.border_size, 0.0..=40.0).drag_value_speed(1.0));
-                        ui.checkbox(&mut self.feather_border, "Feather boarder");
-                        ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
-                        ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
-                        if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Generate avatar")).clicked() {
-                            let _ = self.generate_avatar();
-                        }
-                    });
-                    ui.vertical(|ui| {
-                        ui.label("Border colour:");
-                        ui.scope(|ui| {
-                            ui.spacing_mut().slider_width = 100.0;
-                            egui::widgets::color_picker::color_picker_color32(ui, &mut self.border_colour, egui::color_picker::Alpha::Opaque);
-                        })
-                    });
-                });
+                self.utility_elements(ui);
             }
         });
     }
@@ -200,19 +100,15 @@ impl eframe::App for ImageManipulatorApp<'_> {
 
 impl ImageManipulatorApp<'_> {
     fn generate_avatar(&self) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Generating avatar...");
-
         let Some(image) = &self.preview_image else {
                 error!("No preview available!");
                 return Err(Box::new(Error::MissingSelection));
             };
+        info!("Generating avatar...");
 
-        // resize if needed
+        // resize if required
         let final_image = if self.resize {
-            resize(image,
-                   self.resize_size.into(),
-                   self.resize_size.into(),
-                   image::imageops::FilterType::Lanczos3)
+            resize(image, self.resize_size.into(), self.resize_size.into(), image::imageops::FilterType::Lanczos3)
         } else {
             image.clone()
         };
@@ -236,28 +132,31 @@ impl ImageManipulatorApp<'_> {
         } else {
             String::new()
         };
-
-        format!("{filename}{resize_text}.cropped.png")
+        format!("{filename}{resize_text}_cropped.png")
     }
 
-    fn create_border(&self, cropped: &RgbaImage, inner_radius: f32, width: u32, height: u32, center: Pos2) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-        let radius_squared = inner_radius.powi(2);
+    fn create_border(&self, cropped: &RgbaImage, inner_radius: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+        let (width, height) = cropped.dimensions();
+        let inner_radius_squared = inner_radius.powi(2);
         let outer_radius_squared = (inner_radius + self.border_size).powi(2);
+        let center = Pos2::new((width / 2) as f32, (height / 2) as f32);
         let mut masked = cropped.clone();
         for y in 0..height {
             for x in 0..width {
                 let pixel_pos = Pos2::new(x as f32, y as f32);
                 let distance_squared = (pixel_pos.x - center.x).powi(2) + (pixel_pos.y - center.y).powi(2);
 
+                // we address pixel data directly and overwrite their values in the original image data
                 let pixel = masked.get_pixel_mut(x, y);
-                if distance_squared <= radius_squared {
+                if distance_squared <= inner_radius_squared {
+                    // when inside the border, we use the original pixel value
                     pixel[3] = 255;
                 } else if distance_squared <= outer_radius_squared {
                     let rgba = self.border_colour.to_array();
                     pixel[0] = rgba[0];
                     pixel[1] = rgba[1];
                     pixel[2] = rgba[2];
-                    // inside the outer boundary, apply antialiasing
+                    // inside the outer boundary, apply feathering
                     if self.feather_border {
                         let distance = distance_squared.sqrt();
                         let normalized_distance = (distance - inner_radius) / (inner_radius + self.border_size - inner_radius);
@@ -268,6 +167,7 @@ impl ImageManipulatorApp<'_> {
                         pixel[3] = 255;
                     }
                 } else {
+                    // outside the outer border we set pixels to transparent
                     pixel[3] = 0;
                 }
             }
@@ -283,36 +183,34 @@ impl ImageManipulatorApp<'_> {
     }
 
     #[allow(clippy::type_complexity)]
+    /// Generates the preview used in the active window to be display, as a texture.
+    ///
+    /// It also provides the resulting image as an `ImageBuffer`, ready to be saved.
     fn generate_preview(&self, ctx: &Context) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>,
                                                          egui::TextureHandle), Box<dyn std::error::Error>> {
-        let mut tmp_image = ImageReader::open(self.filepath.as_ref().expect("File path is readable"))?.decode()?;
+        let src_image = ImageReader::open(self.filepath.as_ref().expect("File path is set"))?.decode()?;
 
-        let scale_factor = self.original_image_dimension.expect("Dimensions have been set").x
-            / self.scaled_image_dimension.expect("Dimensions have been set").x;
+        // selection will be square; therefore, we only care about one part for the scaling
+        let scale_factor = self.original_image_dimension.expect("Dimensions have been set").x / self.scaled_image_dimension.expect("Dimensions have been set").x;
         let (start, stop) = self.get_points()?;
-        let (start, stop) = (start * scale_factor, stop * scale_factor);
+        let (scaled_start, scaled_stop) = (start * scale_factor, stop * scale_factor);
 
         // calculate bounding box from points and border
-        let inner_radius = start.distance(stop);
-        let inner_diameter = inner_radius * 2.0;
-        let bounding_box = Rect::from_center_size(start, Vec2 { x: inner_diameter + 2.0 * self.border_size, y: inner_diameter + 2.0 * self.border_size});
+        let inner_radius = scaled_start.distance(scaled_stop);
+        let bounding_box = Rect::from_center_size(scaled_start, Vec2 { x: (inner_radius + self.border_size) * 2.0, y: (inner_radius + self.border_size) * 2.0});
 
         // crop out image depending on the bounding box
-        let crop_x = bounding_box.left_top().x.max(0.0).min(tmp_image.width() as f32) as u32;
-        let crop_y = bounding_box.left_top().y.max(0.0).min(tmp_image.height() as f32) as u32;
-        let crop_width = bounding_box.width().min(tmp_image.width() as f32) as u32;
-        let crop_height = bounding_box.height().min(tmp_image.height() as f32) as u32;
-        let cropped = tmp_image.crop(crop_x, crop_y, crop_width, crop_height).into_rgba8();
+        let crop_x = bounding_box.left_top().x.max(0.0).min(src_image.width() as f32) as u32;
+        let crop_y = bounding_box.left_top().y.max(0.0).min(src_image.height() as f32) as u32;
+        let crop_width = bounding_box.width().min(src_image.width() as f32) as u32;
+        let crop_height = bounding_box.height().min(src_image.height() as f32) as u32;
+        let cropped_image = src_image.crop_imm(crop_x, crop_y, crop_width, crop_height).into_rgba8();
 
-        let (new_width, new_height) = cropped.dimensions();
-        let center = Pos2::new((new_width / 2) as f32, (new_height / 2) as f32);
-
-        let masked = self.create_border(&cropped, inner_radius, new_width, new_height, center);
+        let cropped_masked_image = self.create_border(&cropped_image, inner_radius);
 
         let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
-        let preview_size = (0.5 * (window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT))  as u32; // match the size used in the UI
-        let final_image: ImageBuffer<Rgba<u8>, Vec<u8>> = resize(&masked, preview_size, preview_size,
-                                 image::imageops::FilterType::Lanczos3);
+        let preview_size = u32::from(((0.5 * (window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT)) as u16).max((0.5 * window_dimensions.x) as u16).min(self.resize_size));
+        let final_image: ImageBuffer<Rgba<u8>, Vec<u8>> = resize(&cropped_masked_image, preview_size, preview_size, image::imageops::FilterType::Lanczos3);
 
         let pixels = final_image.as_raw();
         let texture = ctx.load_texture(
@@ -327,6 +225,138 @@ impl ImageManipulatorApp<'_> {
         Ok((final_image, texture))
     }
 
+    /// Displays the preview avatar if available
+    fn preview_panel(&mut self, ui: &mut Ui) {
+        if let Some(texture) = &self.preview_texture {
+            ui.vertical(|ui| {
+                ui.label("Preview:");
+                ui.image(texture);
+            });
+        }
+    }
+
+    /// Displays the main panel with the selected image
+    fn main_display_panel(&mut self, ctx: &Context, window_dimensions: Vec2, ui: &mut Ui) {
+        ui.vertical(|ui| {
+            let image = self
+                .image
+                .clone()
+                .expect("Image is readable")
+                .sense(Sense::click_and_drag())
+                .fit_to_original_size(1.0)
+                .max_width(window_dimensions.x)
+                .max_height(window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT);
+
+            ui.label("Draw from the center out to create a preview.\nRight click to move selection.");
+            let response = ui.add(image);
+            self.scaled_image_dimension = Some(response.rect.size());
+
+            let mut started_in_last_selection = false;
+            // generate start point when new selection is created by left-clicking.
+            // when clicked on the previous selection, the old starting point is kept.
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                let point = ui.input(|i| i.pointer.interact_pos().unwrap_or_default()) - response.rect.left_top().to_vec2();
+                if let (Some(start), Some(stop)) = (self.drag_start, self.drag_stop) {
+                    // Check if started within selection
+                    if (point.distance(start)) <= start.distance(stop) {
+                        started_in_last_selection = true;
+                    }
+                }
+                if !started_in_last_selection {
+                    self.drag_start = Some(point);
+                    self.drag_stop = None;
+                }
+            }
+
+            if response.dragged_by(egui::PointerButton::Primary) {
+                self.drag_stop = Some(ui.input(|i| i.pointer.interact_pos().unwrap_or_default()) - response.rect.left_top().to_vec2());
+            }
+
+            // moving selection when using the right button
+            if response.dragged_by(egui::PointerButton::Secondary) {
+                if let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut()) {
+                    *start += response.drag_delta();
+                    *stop += response.drag_delta();
+                }
+            }
+
+            match (self.drag_start, self.drag_stop) {
+                (Some(start), Some(stop)) => {
+                    let painter = ui.painter_at(response.rect);
+
+                    // centre marker
+                    let radius = 1.0;
+                    let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
+                    painter.circle(circle_center, radius, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::RED));
+
+                    // offset the circle's position by the second image's top-left corner
+                    let center_to_inside_border = start.distance(stop);
+                    let bounding_box = Rect::from_center_size(circle_center, Vec2 { x: (center_to_inside_border + self.border_size) * 2.0, y: (center_to_inside_border + self.border_size) * 2.0 });
+                    painter.rect(bounding_box, CornerRadius::ZERO, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::GREEN), egui::StrokeKind::Outside);
+                    painter.circle(circle_center, center_to_inside_border, egui::Color32::TRANSPARENT, egui::Stroke::new(self.border_size, self.border_colour));
+                }
+                (Some(start), None) => {
+                    let painter = ui.painter_at(response.rect);
+
+                    // offset the circle's position by the second image's top-left corner
+                    let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
+                    let radius = 1.0;
+
+                    painter.circle(circle_center, radius, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::RED));
+                }
+                (None, _) => {
+                    // nothing to do when no start point is set
+                }
+            }
+
+            // after handling the drag and selection, generate a preview
+            if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop) {
+                if let Ok((preview_image, preview_texture)) = self.generate_preview(ctx) {
+                    self.preview_texture = Some(preview_texture);
+                    self.preview_image = Some(preview_image);
+                }
+            }
+        });
+    }
+
+    /// The utility elements that are displayed beneath the original image
+    fn utility_elements(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label("Border width:");
+                ui.add(Slider::new(&mut self.border_size, 0.0..=40.0).drag_value_speed(1.0));
+                ui.checkbox(&mut self.feather_border, "Feather boarder");
+                ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
+                ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
+                if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Generate avatar")).clicked() {
+                    let generate_result = self.generate_avatar(); // TODO: if this fails we should display a popup why it failed
+                    debug!("Generation result: {:?}", generate_result);
+                }
+            });
+            ui.vertical(|ui| {
+                ui.label("Pre-defined colours:");
+                if ui.button("Crimson").clicked() {
+                    self.border_colour = egui::Color32::from_rgb(158, 27, 50);
+                    debug!("Changed border colour to: {:?}", self.border_colour);
+                }
+                if ui.button("Amber").clicked() {
+                    self.border_colour = egui::Color32::from_rgb(255, 192, 0);
+                    debug!("Changed border colour to: {:?}", self.border_colour);
+                }
+                if ui.button("Malachite").clicked() {
+                    self.border_colour = egui::Color32::from_rgb(11, 218, 81);
+                    debug!("Changed border colour to: {:?}", self.border_colour);
+                }
+            });
+            ui.vertical(|ui| {
+                ui.label("Border colour:");
+                ui.scope(|ui| {
+                    ui.spacing_mut().slider_width = 100.0;
+                    egui::widgets::color_picker::color_picker_color32(ui, &mut self.border_colour, egui::color_picker::Alpha::Opaque);
+                })
+            });
+        });
+    }
 }
 
 fn main() -> eframe::Result<()> {
@@ -335,8 +365,7 @@ fn main() -> eframe::Result<()> {
     let fmt_layer = fmt::layer().event_format(custom_format);
     tracing_subscriber::registry().with(env_filter).with(fmt_layer).init();
 
-    let options =
-        eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT]).with_resizable(true).with_maximize_button(true), ..Default::default() };
+    let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT]).with_resizable(true).with_maximize_button(true), ..Default::default() };
 
     info!("Starting application [Version: {VERSION}]");
     eframe::run_native(
@@ -347,5 +376,4 @@ fn main() -> eframe::Result<()> {
             Ok(Box::<ImageManipulatorApp>::default())
         }),
     )
-
 }
