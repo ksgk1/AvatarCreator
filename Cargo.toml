@@ -1,6 +1,6 @@
 [package]
 name = "avatar-creator"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [[bin]]
@@ -14,7 +14,6 @@ eframe = { version = "0.31.1", default-features = false, features = [
     "x11",
     "glow"
 ] }
-winit = { version = "0.30", default-features = true }
 egui_extras = { version = "0.31.1", features = ["file", "image"] }
 image = { version = "0.25.2", default-features = false, features = [
     "jpeg",
@@ -30,6 +29,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 ] }
 rfd = { version = "0.15" }
 thiserror = { version = "2.0" }
+winit = { version = "0.30", default-features = true }
 
 [lints.clippy]
 pedantic = {priority = -1, level = "deny"}
