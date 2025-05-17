@@ -80,8 +80,13 @@ impl eframe::App for AvatarCreatorApp<'_> {
 
             if self.filepath.is_some() {
                 ui.horizontal(|ui| {
-                    // main image
-                    self.main_display_panel(ctx, window_dimensions, ui);
+                    // treat image and settings as one element
+                    ui.vertical(|ui| {
+                        // main image
+                        self.main_display_panel(ctx, window_dimensions, ui);
+                        // utils
+                        self.utility_elements(ui);
+                    });
                     // preview panel
                     self.preview_panel(ui);
                 });
@@ -212,6 +217,8 @@ impl AvatarCreatorApp<'_> {
             ui.vertical(|ui| {
                 ui.label("Preview:");
                 ui.image(texture);
+                let dims = texture.size();
+                ui.label(format!("Size: {} x {}", dims[0], dims[1]));
             });
         }
     }
@@ -307,13 +314,39 @@ impl AvatarCreatorApp<'_> {
     fn utility_elements(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
+                self.shape_selection(ui);
                 ui.label("Border width percentage:");
                 ui.add_enabled(self.shape == Shape::Circle, Slider::new(&mut self.border_percent, 0.0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
                 ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
                 ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
-                if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Generate avatar")).clicked() {
-                    let generate_result = self.generate_avatar(); // TODO: if this fails we should display a popup why it failed
-                    debug!("Generation result: {:?}", generate_result);
+                if !(self.drag_start.is_some() && self.drag_stop.is_some()) {
+                    // disables the elements that follow this point on until the "vertical" group ends
+                    ui.disable();
+                }
+                let generate_response = ui.button("Generate avatar");
+                if generate_response.clicked() {
+                    match self.generate_avatar() {
+                        Err(err) => {
+                            debug!("Generation failed: {err}");
+                            let generation_failed_popup = ui.make_persistent_id("failed_popup_id");
+                            ui.memory_mut(|mem| mem.toggle_popup(generation_failed_popup));
+                            egui::popup::popup_above_or_below_widget(
+                                ui,
+                                generation_failed_popup,
+                                &generate_response,
+                                egui::AboveOrBelow::Below,
+                                egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+                                |ui| {
+                                    ui.set_min_width(200.0); // if you want to control the size
+                                    ui.label("Failed to generate avatar. Reason:");
+                                    ui.label(format!("{err}"));
+                                },
+                            );
+                        }
+                        Ok(()) => {
+                            debug!("Generation successful.");
+                        }
+                    }
                 }
             });
             ui.vertical(|ui| {
