@@ -1,5 +1,5 @@
 use {
-    crate::{SUPPORTED_IMAGE_FORMATS},
+    crate::SUPPORTED_IMAGE_FORMATS,
     eframe::{
         egui,
         egui::{CentralPanel, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Ui, Vec2},
@@ -38,6 +38,13 @@ pub struct AvatarCreatorApp<'a> {
     resize_size: u16,
     preview_texture: Option<egui::TextureHandle>,
     preview_image: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
+    shape: Shape,
+}
+
+#[derive(PartialEq)]
+enum Shape {
+    Square,
+    Circle,
 }
 
 impl Default for AvatarCreatorApp<'_> {
@@ -51,10 +58,11 @@ impl Default for AvatarCreatorApp<'_> {
             original_image_dimension: None,
             scaled_image_dimension: None,
             image: None,
-            resize: false,
+            resize: true,
             resize_size: 400,
             preview_texture: None,
             preview_image: None,
+            shape: Shape::Circle,
         }
     }
 }
@@ -65,18 +73,9 @@ impl eframe::App for AvatarCreatorApp<'_> {
         CentralPanel::default().show(ctx, |ui| {
             let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
             ui.horizontal(|ui| {
-                if ui.button("Load Image").clicked() {
-                    if let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file() {
-                        self.load_image_to_state(&image_path);
-                        // TODO: Windows file handling
-                    }
-                }
-                if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Reset selection")).clicked() {
-                    self.drag_start = None;
-                    self.drag_stop = None;
-                    self.preview_texture = None;
-                    debug!("Reset selection");
-                }
+                self.file_opening(ui);
+                self.selection_reset(ui);
+                self.shape_selection(ui);
             });
 
             if self.filepath.is_some() {
@@ -102,10 +101,12 @@ impl AvatarCreatorApp<'_> {
 
         // resize if required
         let final_image = if self.resize { resize(image, self.resize_size.into(), self.resize_size.into(), image::imageops::FilterType::Lanczos3) } else { image.clone() };
-
-        match final_image.save(self.generate_final_file_name()) {
+        let resulting_file_name = self.generate_final_file_name();
+        match final_image.save(&resulting_file_name) {
             Ok(()) => {
-                info!("Generation successful!");
+                let path = Path::new(&resulting_file_name);
+                let file_name = path.file_name().unwrap().display();
+                info!("Generation successful! File name: {}", file_name);
                 Ok(())
             }
             Err(e) => {
@@ -121,7 +122,8 @@ impl AvatarCreatorApp<'_> {
         format!("{filename}{resize_text}_cropped.png")
     }
 
-    fn create_border(&self, cropped: &RgbaImage, inner_radius: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    /// creates the circle border around the selection made
+    fn create_circle_border(&self, cropped: &RgbaImage, inner_radius: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
         let (width, height) = cropped.dimensions();
         let inner_radius_squared = inner_radius.powi(2);
         let border_size = (self.border_percent / 100.0) * inner_radius;
@@ -178,7 +180,6 @@ impl AvatarCreatorApp<'_> {
         // calculate bounding box from points and border
         let inner_radius = scaled_start.distance(scaled_stop);
         let border_size = (self.border_percent / 100.0) * inner_radius;
-        // let bounding_box = Rect::from_center_size(scaled_start, Vec2 { x: (inner_radius + self.border_size) * 2.0, y: (inner_radius + self.border_size) * 2.0});
         let bounding_box = Rect::from_center_size(scaled_start, Vec2 { x: (inner_radius + border_size) * 2.0, y: (inner_radius + border_size) * 2.0 });
 
         // crop out image depending on the bounding box
@@ -188,10 +189,15 @@ impl AvatarCreatorApp<'_> {
         let crop_height = bounding_box.height().min(src_image.height() as f32) as u32;
         let cropped_image = src_image.crop_imm(crop_x, crop_y, crop_width, crop_height).into_rgba8();
 
-        let cropped_masked_image = self.create_border(&cropped_image, inner_radius);
+        let cropped_masked_image = match self.shape {
+            Shape::Circle => self.create_circle_border(&cropped_image, inner_radius),
+            Shape::Square => cropped_image,
+        };
 
         let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
-        let preview_size = u32::from(((0.5 * (window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT)) as u16).max((0.5 * window_dimensions.x) as u16).min(self.resize_size));
+        let preview_size =
+            if self.resize { u32::from(((0.5 * (window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT)) as u16).max((0.5 * window_dimensions.x) as u16).min(self.resize_size)) } else { crop_width };
+
         let final_image: ImageBuffer<Rgba<u8>, Vec<u8>> = resize(&cropped_masked_image, preview_size, preview_size, image::imageops::FilterType::Lanczos3);
 
         let pixels = final_image.as_raw();
@@ -200,7 +206,7 @@ impl AvatarCreatorApp<'_> {
         Ok((final_image, texture))
     }
 
-    /// Displays the preview avatar if available
+    /// UI element that displays the preview avatar if available
     fn preview_panel(&mut self, ui: &mut Ui) {
         if let Some(texture) = &self.preview_texture {
             ui.vertical(|ui| {
@@ -210,7 +216,7 @@ impl AvatarCreatorApp<'_> {
         }
     }
 
-    /// Displays the main panel with the selected image
+    /// UI element for the main panel with the selected image
     fn main_display_panel(&mut self, ctx: &Context, window_dimensions: Vec2, ui: &mut Ui) {
         ui.vertical(|ui| {
             let image = self
@@ -269,7 +275,9 @@ impl AvatarCreatorApp<'_> {
                     let bounding_box =
                         Rect::from_center_size(circle_center, Vec2 { x: (center_to_inside_border + self.border_percent) * 2.0, y: (center_to_inside_border + self.border_percent) * 2.0 });
                     painter.rect(bounding_box, CornerRadius::ZERO, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::GREEN), egui::StrokeKind::Outside);
-                    painter.circle(circle_center, center_to_inside_border, egui::Color32::TRANSPARENT, egui::Stroke::new(self.border_percent, self.border_colour));
+                    if self.shape == Shape::Circle {
+                        painter.circle(circle_center, center_to_inside_border, egui::Color32::TRANSPARENT, egui::Stroke::new(self.border_percent, self.border_colour));
+                    }
                 }
                 (Some(start), None) => {
                     let painter = ui.painter_at(response.rect);
@@ -295,12 +303,12 @@ impl AvatarCreatorApp<'_> {
         });
     }
 
-    /// The utility elements that are displayed beneath the original image
+    /// UI elements for utilities that are displayed beneath the original image
     fn utility_elements(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label("Border width percentage:");
-                ui.add(Slider::new(&mut self.border_percent, 0.0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
+                ui.add_enabled(self.shape == Shape::Circle, Slider::new(&mut self.border_percent, 0.0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
                 ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
                 ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
                 if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Generate avatar")).clicked() {
@@ -333,6 +341,7 @@ impl AvatarCreatorApp<'_> {
         });
     }
 
+    /// ensures that the image data is loaded when an image is selected, so it can be displayed
     pub(crate) fn load_image_to_state(&mut self, image_path: &Path) {
         self.filepath = Some(image_path.to_path_buf());
         let image_path = image_path.to_str().expect("Image path is UTF-8 string");
@@ -341,5 +350,36 @@ impl AvatarCreatorApp<'_> {
         debug!("Image has dimensions: [{}, {}]", image_dimensions.0, image_dimensions.1);
         self.original_image_dimension = Some(Vec2::new(image_dimensions.0 as f32, image_dimensions.1 as f32));
         self.image = Some(Image::new(format!("file://{image_path}")));
+    }
+
+    /// UI element to open the file and load the data
+    fn file_opening(&mut self, ui: &mut Ui) {
+        if ui.button("Load Image").clicked() {
+            if let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file() {
+                self.load_image_to_state(&image_path);
+                // TODO: Windows file handling
+            }
+        }
+    }
+
+    /// UI element to reset the selection
+    fn selection_reset(&mut self, ui: &mut Ui) {
+        if ui.add_enabled(self.drag_start.is_some() && self.drag_stop.is_some(), egui::Button::new("Reset selection")).clicked() {
+            self.drag_start = None;
+            self.drag_stop = None;
+            self.preview_texture = None;
+            debug!("Reset selection");
+        }
+    }
+
+    /// UI element that allows selecting between different shapes for the avatar
+    fn shape_selection(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Avatar shape:");
+            if ui.radio_value(&mut self.shape, Shape::Square, "Square").clicked() {
+                self.border_percent = 0.0;
+            }
+            ui.radio_value(&mut self.shape, Shape::Circle, "Circle");
+        });
     }
 }
