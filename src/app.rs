@@ -2,7 +2,7 @@ use {
     crate::SUPPORTED_IMAGE_FORMATS,
     eframe::{
         egui,
-        egui::{CentralPanel, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Ui, Vec2},
+        egui::{CentralPanel, Color32, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Ui, Vec2},
     },
     image::{ImageBuffer, ImageReader, Rgba, RgbaImage, imageops::resize},
     rfd::FileDialog,
@@ -30,7 +30,7 @@ pub struct AvatarCreatorApp<'a> {
     drag_start: Option<Pos2>,
     drag_stop: Option<Pos2>,
     border_percent: f32,
-    border_colour: egui::Color32,
+    border_colour: Color32,
     original_image_dimension: Option<Vec2>,
     scaled_image_dimension: Option<Vec2>,
     image: Option<Image<'a>>,
@@ -39,12 +39,29 @@ pub struct AvatarCreatorApp<'a> {
     preview_texture: Option<egui::TextureHandle>,
     preview_image: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
     shape: Shape,
+    color_kind: ColorKind,
+    gradient_angle_deg: f32,
+    gradient_first_colour: Color32,
+    gradient_last_colour: Color32,
+    gradient_change: GradientChange,
 }
 
 #[derive(PartialEq)]
 enum Shape {
     Square,
     Circle,
+}
+
+#[derive(PartialEq)]
+enum ColorKind {
+    SingleColour,
+    Gradient,
+}
+
+#[derive(PartialEq)]
+enum GradientChange {
+    First,
+    Last,
 }
 
 impl Default for AvatarCreatorApp<'_> {
@@ -54,7 +71,7 @@ impl Default for AvatarCreatorApp<'_> {
             drag_start: None,
             drag_stop: None,
             border_percent: BORDER_DEFAULT_PERCENT,
-            border_colour: egui::Color32::WHITE,
+            border_colour: Color32::WHITE,
             original_image_dimension: None,
             scaled_image_dimension: None,
             image: None,
@@ -63,6 +80,11 @@ impl Default for AvatarCreatorApp<'_> {
             preview_texture: None,
             preview_image: None,
             shape: Shape::Circle,
+            color_kind: ColorKind::SingleColour,
+            gradient_angle_deg: 0.0,
+            gradient_first_colour: Color32::WHITE,
+            gradient_last_colour: Color32::WHITE,
+            gradient_change: GradientChange::First,
         }
     }
 }
@@ -75,7 +97,6 @@ impl eframe::App for AvatarCreatorApp<'_> {
             ui.horizontal(|ui| {
                 self.file_opening(ui);
                 self.selection_reset(ui);
-                self.shape_selection(ui);
             });
 
             if self.filepath.is_some() {
@@ -90,7 +111,6 @@ impl eframe::App for AvatarCreatorApp<'_> {
                     // preview panel
                     self.preview_panel(ui);
                 });
-                self.utility_elements(ui);
             }
         });
     }
@@ -135,25 +155,74 @@ impl AvatarCreatorApp<'_> {
         let outer_radius_squared = (inner_radius + border_size).powi(2);
         let center = Pos2::new((width / 2) as f32, (height / 2) as f32);
         let mut masked = cropped.clone();
+
+        // normalize angle to 0-360 degree and convert to radians
+        let angle_rad = (self.gradient_angle_deg % 360.0) * std::f32::consts::PI / 180.0;
+        let dir_x = angle_rad.cos();
+        let dir_y = angle_rad.sin();
+
+        // compute bounding box of the circle
+        let radius_plus_border = inner_radius + border_size;
+        let circle_min_x = center.x - radius_plus_border;
+        let circle_max_x = center.x + radius_plus_border;
+        let circle_min_y = center.y - radius_plus_border;
+        let circle_max_y = center.y + radius_plus_border;
+
+        // calculate projection extremes for normalization
+        let corners = [Pos2::new(circle_min_x, circle_min_y), Pos2::new(circle_max_x, circle_min_y), Pos2::new(circle_max_x, circle_max_y), Pos2::new(circle_min_x, circle_max_y)];
+
+        // find min and max values to normalise gradient positions
+        let mut min_proj = f32::MAX;
+        let mut max_proj = f32::MIN;
+
+        for corner in &corners {
+            // project the point onto the gradient direction
+            let proj = (corner.x - center.x) * dir_x + (corner.y - center.y) * dir_y;
+            min_proj = min_proj.min(proj);
+            max_proj = max_proj.max(proj);
+        }
+
+        let proj_range = max_proj - min_proj;
+
         for y in 0..height {
             for x in 0..width {
                 let pixel_pos = Pos2::new(x as f32, y as f32);
                 let distance_squared = (pixel_pos.x - center.x).powi(2) + (pixel_pos.y - center.y).powi(2);
 
-                // we address pixel data directly and overwrite their values in the original image data
                 let pixel = masked.get_pixel_mut(x, y);
                 if distance_squared <= inner_radius_squared {
-                    // when inside the border, we use the original pixel value
+                    // inside the inner circle - keep the original pixel values
                     pixel[3] = 255;
-                    // TODO: define smoothening within inner radius for a cleaner edge of the border
                 } else if distance_squared <= outer_radius_squared {
-                    let rgba = self.border_colour.to_array();
-                    pixel[0] = rgba[0];
-                    pixel[1] = rgba[1];
-                    pixel[2] = rgba[2];
-                    pixel[3] = 255;
+                    // inside the border area - apply gradient
+
+                    // project the current point onto the gradient direction
+                    let proj = (pixel_pos.x - center.x) * dir_x + (pixel_pos.y - center.y) * dir_y;
+
+                    // normalize to 0.0-1.0 range
+                    let gradient_pos = if proj_range > 0.0 {
+                        (proj - min_proj) / proj_range
+                    } else {
+                        0.5 // fallback
+                    };
+
+                    // apply gradient between start and end colours
+                    let (first_colour, last_colour) = match self.color_kind {
+                        ColorKind::SingleColour => {
+                            (self.border_colour, self.border_colour)
+                        }
+                        ColorKind::Gradient => {
+                            (self.gradient_first_colour, self.gradient_last_colour)
+                        }
+                    };
+                    
+                    let first_colour_rgba = Rgba::from(first_colour.to_srgba_unmultiplied());
+                    let last_colour_rgba = Rgba::from(last_colour.to_srgba_unmultiplied());
+                    let color = lerp(first_colour_rgba, last_colour_rgba, gradient_pos);
+                    // our colour selection only allows RGB values, so we can use 255 here.
+                    pixel.clone_from(&Rgba([color[0], color[1], color[2], 255]));
                 } else {
-                    // outside the outer border we set pixels to transparent
+                    // outside the outer border - transparent
                     pixel[3] = 0;
                 }
             }
@@ -161,7 +230,8 @@ impl AvatarCreatorApp<'_> {
         masked
     }
 
-    fn get_points(&self) -> Result<(Pos2, Pos2), Error> {
+    /// Tries to get the selected start and stop positions
+    fn try_get_points(&self) -> Result<(Pos2, Pos2), Error> {
         if let (Some(start), Some(stop)) = (self.drag_start, self.drag_stop) {
             Ok((start, stop))
         } else {
@@ -179,7 +249,7 @@ impl AvatarCreatorApp<'_> {
 
         // selection will be square; therefore, we only care about one part for the scaling
         let scale_factor = self.original_image_dimension.expect("Dimensions have been set").x / self.scaled_image_dimension.expect("Dimensions have been set").x;
-        let (start, stop) = self.get_points()?;
+        let (start, stop) = self.try_get_points()?;
         let (scaled_start, scaled_stop) = (start * scale_factor, stop * scale_factor);
 
         // calculate bounding box from points and border
@@ -261,11 +331,11 @@ impl AvatarCreatorApp<'_> {
             }
 
             // moving selection when using the right button
-            if response.dragged_by(egui::PointerButton::Secondary) {
-                if let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut()) {
-                    *start += response.drag_delta();
-                    *stop += response.drag_delta();
-                }
+            if response.dragged_by(egui::PointerButton::Secondary)
+                && let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut())
+            {
+                *start += response.drag_delta();
+                *stop += response.drag_delta();
             }
 
             match (self.drag_start, self.drag_stop) {
@@ -275,15 +345,15 @@ impl AvatarCreatorApp<'_> {
                     // centre marker
                     let radius = 1.0;
                     let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
-                    painter.circle(circle_center, radius, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::RED));
+                    painter.circle(circle_center, radius, Color32::TRANSPARENT, Stroke::new(1.0, Color32::RED));
 
                     // offset the circle's position by the second image's top-left corner
                     let center_to_inside_border = start.distance(stop);
                     let bounding_box =
                         Rect::from_center_size(circle_center, Vec2 { x: (center_to_inside_border + self.border_percent) * 2.0, y: (center_to_inside_border + self.border_percent) * 2.0 });
-                    painter.rect(bounding_box, CornerRadius::ZERO, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::GREEN), egui::StrokeKind::Outside);
+                    painter.rect(bounding_box, CornerRadius::ZERO, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN), StrokeKind::Outside);
                     if self.shape == Shape::Circle {
-                        painter.circle(circle_center, center_to_inside_border, egui::Color32::TRANSPARENT, egui::Stroke::new(self.border_percent, self.border_colour));
+                        painter.circle(circle_center, center_to_inside_border, Color32::TRANSPARENT, Stroke::new(self.border_percent, self.border_colour));
                     }
                 }
                 (Some(start), None) => {
@@ -292,8 +362,7 @@ impl AvatarCreatorApp<'_> {
                     // offset the circle's position by the second image's top-left corner
                     let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
                     let radius = 1.0;
-
-                    painter.circle(circle_center, radius, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, egui::Color32::RED));
+                    painter.circle(circle_center, radius, Color32::TRANSPARENT, Stroke::new(1.0, Color32::RED));
                 }
                 (None, _) => {
                     // nothing to do when no start point is set
@@ -301,11 +370,11 @@ impl AvatarCreatorApp<'_> {
             }
 
             // after handling the drag and selection, generate a preview
-            if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop) {
-                if let Ok((preview_image, preview_texture)) = self.generate_preview(ctx) {
-                    self.preview_texture = Some(preview_texture);
-                    self.preview_image = Some(preview_image);
-                }
+            if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop)
+                && let Ok((preview_image, preview_texture)) = self.generate_preview(ctx)
+            {
+                self.preview_texture = Some(preview_texture);
+                self.preview_image = Some(preview_image);
             }
         });
     }
@@ -319,6 +388,11 @@ impl AvatarCreatorApp<'_> {
                 ui.add_enabled(self.shape == Shape::Circle, Slider::new(&mut self.border_percent, 0.0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
                 ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
                 ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
+                self.border_coloring_selection(ui);
+                ui.horizontal(|ui| {
+                    ui.label("Gradient angle:");
+                    ui.add_enabled(self.color_kind == ColorKind::Gradient, Slider::new(&mut self.gradient_angle_deg, 0.0..=360.0).drag_value_speed(0.1));
+                });
                 if !(self.drag_start.is_some() && self.drag_stop.is_some()) {
                     // disables the elements that follow this point on until the "vertical" group ends
                     ui.disable();
@@ -352,26 +426,55 @@ impl AvatarCreatorApp<'_> {
             ui.vertical(|ui| {
                 ui.label("Pre-defined colours:");
                 if ui.button("Crimson").clicked() {
-                    self.border_colour = egui::Color32::from_rgb(158, 27, 50);
+                    self.border_colour = Color32::from_rgb(158, 27, 50);
                     debug!("Changed border colour to: {:?}", self.border_colour);
                 }
                 if ui.button("Amber").clicked() {
-                    self.border_colour = egui::Color32::from_rgb(255, 192, 0);
+                    self.border_colour = Color32::from_rgb(255, 192, 0);
                     debug!("Changed border colour to: {:?}", self.border_colour);
                 }
                 if ui.button("Malachite").clicked() {
-                    self.border_colour = egui::Color32::from_rgb(11, 218, 81);
+                    self.border_colour = Color32::from_rgb(11, 218, 81);
                     debug!("Changed border colour to: {:?}", self.border_colour);
                 }
+                self.gradient_colour_selector(ui);
             });
-            ui.vertical(|ui| {
-                ui.label("Border colour:");
-                ui.scope(|ui| {
-                    ui.spacing_mut().slider_width = 100.0;
-                    egui::widgets::color_picker::color_picker_color32(ui, &mut self.border_colour, egui::color_picker::Alpha::Opaque);
-                })
-            });
+            self.border_colour_element(ui);
         });
+    }
+
+    fn border_colour_element(&mut self, ui: &mut Ui) {
+        ui.vertical(|ui| {
+            ui.label("Border colour:");
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 100.0;
+                egui::widgets::color_picker::color_picker_color32(ui, &mut self.border_colour, egui::color_picker::Alpha::Opaque);
+                // write colours into fields if necessary
+                if self.color_kind == ColorKind::Gradient {
+                    match self.gradient_change {
+                        GradientChange::First => {
+                            self.gradient_first_colour = self.border_colour;
+                        }
+                        GradientChange::Last => {
+                            self.gradient_last_colour = self.border_colour;
+                        }
+                    }
+                }
+            })
+        });
+    }
+
+    fn gradient_colour_selector(&mut self, ui: &mut Ui) {
+        if self.color_kind == ColorKind::Gradient {
+            ui.vertical(|ui| {
+                if ui.radio_value(&mut self.gradient_change, GradientChange::First, "First colour").clicked() {
+                    self.border_colour = self.gradient_first_colour;
+                }
+                if ui.radio_value(&mut self.gradient_change, GradientChange::Last, "Second colour").clicked() {
+                    self.border_colour = self.gradient_last_colour;
+                }
+            });
+        }
     }
 
     /// ensures that the image data is loaded when an image is selected, so it can be displayed
@@ -387,11 +490,11 @@ impl AvatarCreatorApp<'_> {
 
     /// UI element to open the file and load the data
     fn file_opening(&mut self, ui: &mut Ui) {
-        if ui.button("Load Image").clicked() {
-            if let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file() {
-                self.load_image_to_state(&image_path);
-                // TODO: Windows file handling
-            }
+        if ui.button("Load Image").clicked()
+            && let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file()
+        {
+            self.load_image_to_state(&image_path);
+            // TODO: Windows file handling
         }
     }
 
@@ -415,4 +518,28 @@ impl AvatarCreatorApp<'_> {
             ui.radio_value(&mut self.shape, Shape::Circle, "Circle");
         });
     }
+
+    /// UI element to select the border type
+    fn border_coloring_selection(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Border colour type:");
+            ui.radio_value(&mut self.color_kind, ColorKind::SingleColour, "Single colour");
+            ui.radio_value(&mut self.color_kind, ColorKind::Gradient, "Gradient");
+        });
+    }
+}
+
+#[inline]
+/// Linear interpolation between two RGBA values
+fn lerp(first: Rgba<u8>, second: Rgba<u8>, pos: f32) -> Rgba<u8> {
+    if first == second {
+        return first;
+    }
+    let pos = pos.clamp(0.0, 1.0);
+    
+    let red = (f32::from(first[0]) * pos) + (f32::from(second[0]) * (1.0 - pos));
+    let green = (f32::from(first[1]) * pos) + (f32::from(second[1]) * (1.0 - pos));
+    let blue = (f32::from(first[2]) * pos) + (f32::from(second[2]) * (1.0 - pos));
+    let alpha = (f32::from(first[3]) * pos) + (f32::from(second[3]) * (1.0 - pos));
+    Rgba([red as u8, green as u8, blue as u8, alpha as u8])
 }

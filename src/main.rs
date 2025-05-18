@@ -1,7 +1,7 @@
 use {
     app::AvatarCreatorApp,
     eframe::egui::{self},
-    std::path::PathBuf,
+    std::path::Path,
     tracing::{info, warn},
     tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
@@ -38,7 +38,7 @@ fn main() -> eframe::Result<()> {
             let file = args[1].as_str();
             for ext in SUPPORTED_IMAGE_FORMATS {
                 if file.to_ascii_lowercase().ends_with(ext) {
-                    default_state.load_image_to_state(&PathBuf::from(file));
+                    default_state.load_image_to_state(Path::new(file));
                     break;
                 }
             }
