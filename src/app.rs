@@ -331,11 +331,12 @@ impl AvatarCreatorApp<'_> {
             }
 
             // moving selection when using the right button
-            if response.dragged_by(egui::PointerButton::Secondary)
-                && let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut())
-            {
-                *start += response.drag_delta();
-                *stop += response.drag_delta();
+            if response.dragged_by(egui::PointerButton::Secondary) {
+                if let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut())
+                {
+                    *start += response.drag_delta();
+                    *stop += response.drag_delta();
+                }
             }
 
             match (self.drag_start, self.drag_stop) {
@@ -370,12 +371,14 @@ impl AvatarCreatorApp<'_> {
             }
 
             // after handling the drag and selection, generate a preview
-            if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop)
-                && let Ok((preview_image, preview_texture)) = self.generate_preview(ctx)
-            {
-                self.preview_texture = Some(preview_texture);
-                self.preview_image = Some(preview_image);
+            if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop) {
+                if let Ok((preview_image, preview_texture)) = self.generate_preview(ctx)
+                {
+                    self.preview_texture = Some(preview_texture);
+                    self.preview_image = Some(preview_image);
+                }
             }
+              
         });
     }
 
@@ -490,12 +493,14 @@ impl AvatarCreatorApp<'_> {
 
     /// UI element to open the file and load the data
     fn file_opening(&mut self, ui: &mut Ui) {
-        if ui.button("Load Image").clicked()
-            && let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file()
-        {
-            self.load_image_to_state(&image_path);
-            // TODO: Windows file handling
+        if ui.button("Load Image").clicked() {
+            if let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file()
+            {
+                self.load_image_to_state(&image_path);
+                // TODO: Windows file handling
+            }
         }
+            
     }
 
     /// UI element to reset the selection
