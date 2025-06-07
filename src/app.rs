@@ -147,6 +147,71 @@ impl AvatarCreatorApp<'_> {
         format!("{filename}{resize_text}_cropped.png")
     }
 
+    // creates the square border around the selection made
+    fn create_square_border(&self, cropped: &RgbaImage, inner_size: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+        if self.border_percent <= 0.0 {
+            // no border => no work to do
+            return cropped.clone();
+        }
+
+        // compute bounding box of the circle
+        let border_size = (self.border_percent / 100.0) * inner_size;
+        let radius_plus_border = inner_size + border_size;
+        let (width, height) = cropped.dimensions();
+        let center = Pos2::new((width / 2) as f32, (height / 2) as f32);
+        let square_min_x = center.x - radius_plus_border;
+        let square_max_x = center.x + radius_plus_border;
+        let square_min_y = center.y - radius_plus_border;
+        let square_max_y = center.y + radius_plus_border;
+
+        // normalize angle to 0-360 degree and convert to radians
+        let angle_rad = (self.gradient_angle_deg % 360.0) * std::f32::consts::PI / 180.0;
+        let dir_x = angle_rad.cos();
+        let dir_y = angle_rad.sin();
+
+        // calculate projection extremes for normalization
+        let corners = [Pos2::new(square_min_x, square_min_y), Pos2::new(square_max_x, square_min_y), Pos2::new(square_max_x, square_max_y), Pos2::new(square_min_x, square_max_y)];
+
+        // find min and max values to normalise gradient positions
+        let (min_proj, max_proj) =  Self::calc_point_gradient_direction(center, dir_x, dir_y, &corners);
+        let proj_range = max_proj - min_proj;
+
+        let mut masked = cropped.clone();
+        for y in 0..height {
+            for x in 0..width {
+                let pixel_pos = Pos2::new(x as f32, y as f32);
+
+                // project the current point onto the gradient direction
+                let proj = (pixel_pos.x - center.x) * dir_x + (pixel_pos.y - center.y) * dir_y;
+
+                // normalize to 0.0-1.0 range
+                let gradient_pos = if proj_range > 0.0 {
+                    (proj - min_proj) / proj_range
+                } else {
+                    0.5 // fallback
+                };
+
+                // apply gradient between start and end colours
+                let color = match self.color_kind {
+                    ColorKind::SingleColour => {
+                        Rgba::from(self.border_colour.to_srgba_unmultiplied())
+                    }
+                    ColorKind::Gradient => {
+                        lerp(Rgba::from(self.gradient_first_colour.to_srgba_unmultiplied()), Rgba::from(self.gradient_last_colour.to_srgba_unmultiplied()), gradient_pos)
+                    }
+                };
+
+                let pixel = masked.get_pixel_mut(x, y);
+                if (x < (border_size as u32)) || x > (width - border_size as u32) ||
+                    (y < (border_size as u32)) || y > (height - border_size as u32) {
+                    pixel.clone_from(&Rgba([color[0], color[1], color[2], 255]));
+                }
+            }
+        }
+        masked
+    }
+
+
     /// creates the circle border around the selection made
     fn create_circle_border(&self, cropped: &RgbaImage, inner_radius: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
         let (width, height) = cropped.dimensions();
@@ -172,15 +237,7 @@ impl AvatarCreatorApp<'_> {
         let corners = [Pos2::new(circle_min_x, circle_min_y), Pos2::new(circle_max_x, circle_min_y), Pos2::new(circle_max_x, circle_max_y), Pos2::new(circle_min_x, circle_max_y)];
 
         // find min and max values to normalise gradient positions
-        let mut min_proj = f32::MAX;
-        let mut max_proj = f32::MIN;
-
-        for corner in &corners {
-            // project the point onto the gradient direction
-            let proj = (corner.x - center.x) * dir_x + (corner.y - center.y) * dir_y;
-            min_proj = min_proj.min(proj);
-            max_proj = max_proj.max(proj);
-        }
+        let (min_proj, max_proj) =  Self::calc_point_gradient_direction(center, dir_x, dir_y, &corners);
 
         let proj_range = max_proj - min_proj;
 
@@ -230,6 +287,18 @@ impl AvatarCreatorApp<'_> {
         masked
     }
 
+    fn calc_point_gradient_direction(center: Pos2, dir_x: f32, dir_y: f32, corners: &[Pos2; 4]) -> (f32, f32) {
+        let mut min_proj = f32::MAX;
+        let mut max_proj = f32::MIN;
+        for corner in corners {
+            // project the point onto the gradient direction
+            let proj = (corner.x - center.x) * dir_x + (corner.y - center.y) * dir_y;
+            min_proj = min_proj.min(proj);
+            max_proj = max_proj.max(proj);
+        }
+        (min_proj, max_proj)
+    }
+
     /// Tries to get the selected start and stop positions
     fn try_get_points(&self) -> Result<(Pos2, Pos2), Error> {
         if let (Some(start), Some(stop)) = (self.drag_start, self.drag_stop) {
@@ -266,7 +335,7 @@ impl AvatarCreatorApp<'_> {
 
         let cropped_masked_image = match self.shape {
             Shape::Circle => self.create_circle_border(&cropped_image, inner_radius),
-            Shape::Square => cropped_image,
+            Shape::Square => self.create_square_border(&cropped_image, inner_radius),
         };
 
         let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
@@ -331,6 +400,7 @@ impl AvatarCreatorApp<'_> {
             }
 
             // moving selection when using the right button
+            #[allow(clippy::collapsible_if)] // TODO: collapse once let chains stabilise in stable
             if response.dragged_by(egui::PointerButton::Secondary) {
                 if let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut())
                 {
@@ -350,8 +420,10 @@ impl AvatarCreatorApp<'_> {
 
                     // offset the circle's position by the second image's top-left corner
                     let center_to_inside_border = start.distance(stop);
-                    let bounding_box =
-                        Rect::from_center_size(circle_center, Vec2 { x: (center_to_inside_border + self.border_percent) * 2.0, y: (center_to_inside_border + self.border_percent) * 2.0 });
+                    let bounding_box = match self.shape {
+                        Shape::Circle => Rect::from_center_size(circle_center, Vec2 { x: (center_to_inside_border + self.border_percent) * 2.0, y: (center_to_inside_border + self.border_percent) * 2.0 }),
+                        Shape::Square => Rect::from_center_size(circle_center, Vec2 { x: center_to_inside_border * 2.0, y: center_to_inside_border * 2.0 }) // for the square we just use the selected box
+                    };
                     painter.rect(bounding_box, CornerRadius::ZERO, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN), StrokeKind::Outside);
                     if self.shape == Shape::Circle {
                         painter.circle(circle_center, center_to_inside_border, Color32::TRANSPARENT, Stroke::new(self.border_percent, self.border_colour));
@@ -371,6 +443,7 @@ impl AvatarCreatorApp<'_> {
             }
 
             // after handling the drag and selection, generate a preview
+            #[allow(clippy::collapsible_if)] // TODO: collapse once let chains stabilise in stable
             if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop) {
                 if let Ok((preview_image, preview_texture)) = self.generate_preview(ctx)
                 {
@@ -388,7 +461,7 @@ impl AvatarCreatorApp<'_> {
             ui.vertical(|ui| {
                 self.shape_selection(ui);
                 ui.label("Border width percentage:");
-                ui.add_enabled(self.shape == Shape::Circle, Slider::new(&mut self.border_percent, 0.0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
+                ui.add(Slider::new(&mut self.border_percent, 0.0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
                 ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
                 ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
                 self.border_coloring_selection(ui);
@@ -493,6 +566,7 @@ impl AvatarCreatorApp<'_> {
 
     /// UI element to open the file and load the data
     fn file_opening(&mut self, ui: &mut Ui) {
+        #[allow(clippy::collapsible_if)] // TODO: collapse once let chains stabilise in stable
         if ui.button("Load Image").clicked() {
             if let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file()
             {
@@ -517,9 +591,7 @@ impl AvatarCreatorApp<'_> {
     fn shape_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Avatar shape:");
-            if ui.radio_value(&mut self.shape, Shape::Square, "Square").clicked() {
-                self.border_percent = 0.0;
-            }
+            ui.radio_value(&mut self.shape, Shape::Square, "Square");
             ui.radio_value(&mut self.shape, Shape::Circle, "Circle");
         });
     }
