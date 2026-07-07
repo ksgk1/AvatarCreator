@@ -1,15 +1,15 @@
 [package]
     edition = "2024"
     name    = "avatar-creator"
-    version = "0.6.0"
+    version = "0.6.1"
 
 [[bin]]
     name = "avatar-creator"
     path = "src/main.rs"
 
 [dependencies]
-    eframe             = { version = "0.31.1", default-features = false, features = ["default_fonts", "wayland", "x11", "glow"] }
-    egui_extras        = { version = "0.31.1", features = ["file", "image"] }
+    eframe             = { version = "0.35", default-features = false, features = ["default_fonts", "wayland", "x11", "glow"] }
+    egui_extras        = { version = "0.35", features = ["file", "image"] }
     image              = { version = "0.25", default-features = false, features = ["jpeg", "png", "rayon", "webp"] }
     rfd                = { version = "0.17" }
     thiserror          = { version = "2.0" }

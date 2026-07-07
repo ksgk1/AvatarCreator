@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use eframe::egui;
-use eframe::egui::{CentralPanel, Color32, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Ui, Vec2};
+use eframe::egui::{self, CentralPanel, Color32, CornerRadius, Image, Popup, Pos2, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Ui, Vec2};
 use image::imageops::resize;
 use image::{ImageBuffer, ImageReader, Rgba, RgbaImage};
 use rfd::FileDialog;
@@ -43,6 +42,8 @@ pub struct AvatarCreatorApp<'a> {
     gradient_first_colour:    Color32,
     gradient_last_colour:     Color32,
     gradient_change:          GradientChange,
+    error_popup_open:         bool,
+    error_message:            Option<String>,
 }
 
 #[derive(PartialEq)]
@@ -84,15 +85,16 @@ impl Default for AvatarCreatorApp<'_> {
             gradient_first_colour:    Color32::WHITE,
             gradient_last_colour:     Color32::WHITE,
             gradient_change:          GradientChange::First,
+            error_popup_open:         false,
+            error_message:            None,
         }
     }
 }
 
 impl eframe::App for AvatarCreatorApp<'_> {
     #[allow(clippy::cognitive_complexity)]
-    fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
-        CentralPanel::default().show(ctx, |ui| {
-            let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
+    fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
+        CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
                 self.file_opening(ui);
                 self.selection_reset(ui);
@@ -100,14 +102,10 @@ impl eframe::App for AvatarCreatorApp<'_> {
 
             if self.filepath.is_some() {
                 ui.horizontal(|ui| {
-                    // treat image and settings as one element
                     ui.vertical(|ui| {
-                        // main image
-                        self.main_display_panel(ctx, window_dimensions, ui);
-                        // utils
+                        self.main_display_panel(ui);
                         self.utility_elements(ui);
                     });
-                    // preview panel
                     self.preview_panel(ui);
                 });
             }
@@ -328,7 +326,7 @@ impl AvatarCreatorApp<'_> {
     ///
     /// It also provides the resulting image as an `ImageBuffer`, ready to be
     /// saved.
-    fn generate_preview(&self, ctx: &Context) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, egui::TextureHandle), Box<dyn std::error::Error>> {
+    fn generate_preview(&self, ui: &Ui) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, egui::TextureHandle), Box<dyn std::error::Error>> {
         let src_image = ImageReader::open(self.filepath.as_ref().expect("File path is set"))?.decode()?;
         let scale_factor = self.original_image_dimension.expect("Dimensions have been set").x / self.scaled_image_dimension.expect("Dimensions have been set").x;
         let (start, stop) = self.try_get_points()?;
@@ -355,15 +353,14 @@ impl AvatarCreatorApp<'_> {
             Shape::Square => self.create_square_border(&cropped_image, inner_radius, content_radius),
         };
 
-        let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
+        let window_dimensions = ui.input(eframe::egui::InputState::content_rect).size();
         let preview_size =
             if self.resize { u32::from(((0.5 * (window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT)) as u16).max((0.5 * window_dimensions.x) as u16).min(self.resize_size)) } else { crop_width };
         let final_image =
             if preview_size == cropped_masked_image.width() { cropped_masked_image.clone() } else { resize(&cropped_masked_image, preview_size, preview_size, image::imageops::FilterType::Lanczos3) };
 
         let pixels = final_image.as_raw();
-        let texture = ctx.load_texture("preview", egui::ColorImage::from_rgba_unmultiplied([preview_size as usize, preview_size as usize], pixels), egui::TextureOptions::default());
-
+        let texture = ui.ctx().load_texture("preview", egui::ColorImage::from_rgba_unmultiplied([preview_size as usize, preview_size as usize], pixels), egui::TextureOptions::default());
         Ok((final_image, texture))
     }
 
@@ -380,8 +377,9 @@ impl AvatarCreatorApp<'_> {
     }
 
     /// UI element for the main panel with the selected image
-    fn main_display_panel(&mut self, ctx: &Context, window_dimensions: Vec2, ui: &mut Ui) {
+    fn main_display_panel(&mut self, ui: &mut Ui) {
         ui.vertical(|ui| {
+            let window_dimensions = ui.input(eframe::egui::InputState::content_rect).size();
             let image = self
                 .image
                 .clone()
@@ -457,7 +455,7 @@ impl AvatarCreatorApp<'_> {
 
             // after handling the drag and selection, generate a preview
             if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop)
-                && let Ok((preview_image, preview_texture)) = self.generate_preview(ctx)
+                && let Ok((preview_image, preview_texture)) = self.generate_preview(ui)
             {
                 self.preview_texture = Some(preview_texture);
                 self.preview_image = Some(preview_image);
@@ -488,27 +486,24 @@ impl AvatarCreatorApp<'_> {
                 if generate_response.clicked() {
                     match self.generate_avatar() {
                         Err(err) => {
-                            debug!("Generation failed: {err}");
-                            let generation_failed_popup = ui.make_persistent_id("failed_popup_id");
-                            ui.memory_mut(|mem| mem.toggle_popup(generation_failed_popup));
-                            egui::popup::popup_above_or_below_widget(
-                                ui,
-                                generation_failed_popup,
-                                &generate_response,
-                                egui::AboveOrBelow::Below,
-                                egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-                                |ui| {
-                                    ui.set_min_width(200.0); // if you want to control the size
-                                    ui.label("Failed to generate avatar. Reason:");
-                                    ui.label(format!("{err}"));
-                                },
-                            );
+                            let err_str = err.to_string();
+                            debug!("Generation failed: {}", err_str);
+                            self.error_message = Some(err_str);
+                            self.error_popup_open = true;
                         }
                         Ok(()) => {
                             debug!("Generation successful.");
                         }
                     }
                 }
+
+                Popup::from_response(&generate_response).open(self.error_popup_open).show(|ui| {
+                    ui.set_min_width(200.0);
+                    ui.label("Failed to generate avatar. Reason:");
+                    if let Some(msg) = &self.error_message {
+                        ui.label(msg);
+                    }
+                });
             });
             ui.vertical(|ui| {
                 ui.label("Pre-defined colours:");
