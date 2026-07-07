@@ -1,10 +1,11 @@
-use {
-    app::AvatarCreatorApp,
-    eframe::egui::{self},
-    std::path::Path,
-    tracing::{info, warn},
-    tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
-};
+use std::path::Path;
+
+use app::AvatarCreatorApp;
+use eframe::egui::{self};
+use tracing::{info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod app;
 
@@ -34,7 +35,8 @@ fn main() -> eframe::Result<()> {
             // normal operation, we select the image manually
         }
         2 => {
-            // we check if the first argument is a valid path to an image, so we can load it immediately
+            // we check if the first argument is a valid path to an image, so we can load it
+            // immediately
             let file = args[1].as_str();
             for ext in SUPPORTED_IMAGE_FORMATS {
                 if file.to_ascii_lowercase().ends_with(ext) {

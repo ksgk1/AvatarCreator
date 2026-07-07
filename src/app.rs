@@ -1,15 +1,14 @@
-use {
-    crate::SUPPORTED_IMAGE_FORMATS,
-    eframe::{
-        egui,
-        egui::{CentralPanel, Color32, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Ui, Vec2},
-    },
-    image::{ImageBuffer, ImageReader, Rgba, RgbaImage, imageops::resize},
-    rfd::FileDialog,
-    std::path::{Path, PathBuf},
-    thiserror::Error,
-    tracing::{debug, error, info},
-};
+use std::path::{Path, PathBuf};
+
+use eframe::egui;
+use eframe::egui::{CentralPanel, Color32, Context, CornerRadius, Image, Pos2, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Ui, Vec2};
+use image::imageops::resize;
+use image::{ImageBuffer, ImageReader, Rgba, RgbaImage};
+use rfd::FileDialog;
+use thiserror::Error;
+use tracing::{debug, error, info};
+
+use crate::SUPPORTED_IMAGE_FORMATS;
 
 /// The height of all UI elements that are not the image.
 ///
@@ -26,24 +25,24 @@ enum Error {
 }
 
 pub struct AvatarCreatorApp<'a> {
-    filepath: Option<PathBuf>,
-    drag_start: Option<Pos2>,
-    drag_stop: Option<Pos2>,
-    border_percent: f32,
-    border_colour: Color32,
+    filepath:                 Option<PathBuf>,
+    drag_start:               Option<Pos2>,
+    drag_stop:                Option<Pos2>,
+    border_percent:           f32,
+    border_colour:            Color32,
     original_image_dimension: Option<Vec2>,
-    scaled_image_dimension: Option<Vec2>,
-    image: Option<Image<'a>>,
-    resize: bool,
-    resize_size: u16,
-    preview_texture: Option<egui::TextureHandle>,
-    preview_image: Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
-    shape: Shape,
-    color_kind: ColorKind,
-    gradient_angle_deg: f32,
-    gradient_first_colour: Color32,
-    gradient_last_colour: Color32,
-    gradient_change: GradientChange,
+    scaled_image_dimension:   Option<Vec2>,
+    image:                    Option<Image<'a>>,
+    resize:                   bool,
+    resize_size:              u16,
+    preview_texture:          Option<egui::TextureHandle>,
+    preview_image:            Option<ImageBuffer<Rgba<u8>, Vec<u8>>>,
+    shape:                    Shape,
+    color_kind:               ColorKind,
+    gradient_angle_deg:       f32,
+    gradient_first_colour:    Color32,
+    gradient_last_colour:     Color32,
+    gradient_change:          GradientChange,
 }
 
 #[derive(PartialEq)]
@@ -67,24 +66,24 @@ enum GradientChange {
 impl Default for AvatarCreatorApp<'_> {
     fn default() -> Self {
         Self {
-            filepath: None,
-            drag_start: None,
-            drag_stop: None,
-            border_percent: BORDER_DEFAULT_PERCENT,
-            border_colour: Color32::WHITE,
+            filepath:                 None,
+            drag_start:               None,
+            drag_stop:                None,
+            border_percent:           BORDER_DEFAULT_PERCENT,
+            border_colour:            Color32::WHITE,
             original_image_dimension: None,
-            scaled_image_dimension: None,
-            image: None,
-            resize: true,
-            resize_size: 400,
-            preview_texture: None,
-            preview_image: None,
-            shape: Shape::Circle,
-            color_kind: ColorKind::SingleColour,
-            gradient_angle_deg: 0.0,
-            gradient_first_colour: Color32::WHITE,
-            gradient_last_colour: Color32::WHITE,
-            gradient_change: GradientChange::First,
+            scaled_image_dimension:   None,
+            image:                    None,
+            resize:                   true,
+            resize_size:              400,
+            preview_texture:          None,
+            preview_image:            None,
+            shape:                    Shape::Circle,
+            color_kind:               ColorKind::SingleColour,
+            gradient_angle_deg:       0.0,
+            gradient_first_colour:    Color32::WHITE,
+            gradient_last_colour:     Color32::WHITE,
+            gradient_change:          GradientChange::First,
         }
     }
 }
@@ -148,138 +147,152 @@ impl AvatarCreatorApp<'_> {
     }
 
     // creates the square border around the selection made
-    fn create_square_border(&self, cropped: &RgbaImage, inner_size: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-        if self.border_percent <= 0.0 {
-            // no border => no work to do
-            return cropped.clone();
+    fn create_square_border(
+        &self,
+        cropped: &RgbaImage,
+        inner_size: f32,
+        content_half: f32, // inner_size - border_size
+    ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+        let final_size = (2.0 * inner_size).ceil() as u32;
+        let mut masked = ImageBuffer::new(final_size, final_size);
+        let final_center = Pos2::new(final_size as f32 / 2.0, final_size as f32 / 2.0);
+
+        if content_half <= 0.0 {
+            let colour = match self.color_kind {
+                ColorKind::SingleColour => Rgba::from(self.border_colour.to_srgba_unmultiplied()),
+                ColorKind::Gradient => Rgba::from(self.gradient_first_colour.to_srgba_unmultiplied()),
+            };
+            for pixel in masked.pixels_mut() {
+                *pixel = colour;
+                pixel[3] = 255;
+            }
+            return masked;
         }
 
-        // compute bounding box of the circle
-        let border_size = (self.border_percent / 100.0) * inner_size;
-        let radius_plus_border = inner_size + border_size;
-        let (width, height) = cropped.dimensions();
-        let center = Pos2::new((width / 2) as f32, (height / 2) as f32);
-        let square_min_x = center.x - radius_plus_border;
-        let square_max_x = center.x + radius_plus_border;
-        let square_min_y = center.y - radius_plus_border;
-        let square_max_y = center.y + radius_plus_border;
+        let content_pixel_size = (2.0 * content_half).ceil() as u32;
+        let scaled_content = resize(cropped, content_pixel_size, content_pixel_size, image::imageops::FilterType::Lanczos3);
 
-        // normalize angle to 0-360 degree and convert to radians
+        let offset_x = (final_size as f32 - content_pixel_size as f32) / 2.0;
+        let offset_y = (final_size as f32 - content_pixel_size as f32) / 2.0;
+
         let angle_rad = (self.gradient_angle_deg % 360.0) * std::f32::consts::PI / 180.0;
         let dir_x = angle_rad.cos();
         let dir_y = angle_rad.sin();
-
-        // calculate projection extremes for normalization
-        let corners = [Pos2::new(square_min_x, square_min_y), Pos2::new(square_max_x, square_min_y), Pos2::new(square_max_x, square_max_y), Pos2::new(square_min_x, square_max_y)];
-
-        // find min and max values to normalise gradient positions
-        let (min_proj, max_proj) =  Self::calc_point_gradient_direction(center, dir_x, dir_y, &corners);
+        let corners = [Pos2::new(0.0, 0.0), Pos2::new(final_size as f32, 0.0), Pos2::new(final_size as f32, final_size as f32), Pos2::new(0.0, final_size as f32)];
+        let (min_proj, max_proj) = Self::calc_point_gradient_direction(final_center, dir_x, dir_y, &corners);
         let proj_range = max_proj - min_proj;
 
-        let mut masked = cropped.clone();
-        for y in 0..height {
-            for x in 0..width {
-                let pixel_pos = Pos2::new(x as f32, y as f32);
-
-                // project the current point onto the gradient direction
-                let proj = (pixel_pos.x - center.x) * dir_x + (pixel_pos.y - center.y) * dir_y;
-
-                // normalize to 0.0-1.0 range
-                let gradient_pos = if proj_range > 0.0 {
-                    (proj - min_proj) / proj_range
-                } else {
-                    0.5 // fallback
-                };
-
-                // apply gradient between start and end colours
-                let color = match self.color_kind {
-                    ColorKind::SingleColour => {
-                        Rgba::from(self.border_colour.to_srgba_unmultiplied())
-                    }
-                    ColorKind::Gradient => {
-                        lerp(Rgba::from(self.gradient_first_colour.to_srgba_unmultiplied()), Rgba::from(self.gradient_last_colour.to_srgba_unmultiplied()), gradient_pos)
-                    }
-                };
-
+        for y in 0..final_size {
+            for x in 0..final_size {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let dx = px - final_center.x;
+                let dy = py - final_center.y;
                 let pixel = masked.get_pixel_mut(x, y);
-                if (x < (border_size as u32)) || x > (width - border_size as u32) ||
-                    (y < (border_size as u32)) || y > (height - border_size as u32) {
+
+                let is_inside_content = dx.abs() <= content_half && dy.abs() <= content_half;
+                let is_inside_inner = dx.abs() <= inner_size && dy.abs() <= inner_size;
+
+                if is_inside_content {
+                    let src_x = (px - offset_x).clamp(0.0, content_pixel_size as f32 - 1.0) as u32;
+                    let src_y = (py - offset_y).clamp(0.0, content_pixel_size as f32 - 1.0) as u32;
+                    if let Some(src_pixel) = scaled_content.get_pixel_checked(src_x, src_y) {
+                        *pixel = *src_pixel;
+                        pixel[3] = 255;
+                    } else {
+                        pixel[3] = 0;
+                    }
+                } else if is_inside_inner {
+                    let proj = dx * dir_x + dy * dir_y;
+                    let gradient_pos = if proj_range > 0.0 { (proj - min_proj) / proj_range } else { 0.5 };
+                    let color = match self.color_kind {
+                        ColorKind::SingleColour => Rgba::from(self.border_colour.to_srgba_unmultiplied()),
+                        ColorKind::Gradient => {
+                            let first = Rgba::from(self.gradient_first_colour.to_srgba_unmultiplied());
+                            let last = Rgba::from(self.gradient_last_colour.to_srgba_unmultiplied());
+                            lerp(first, last, gradient_pos)
+                        }
+                    };
                     pixel.clone_from(&Rgba([color[0], color[1], color[2], 255]));
+                } else {
+                    pixel[3] = 0;
                 }
             }
         }
         masked
     }
 
-
     /// creates the circle border around the selection made
-    fn create_circle_border(&self, cropped: &RgbaImage, inner_radius: f32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-        let (width, height) = cropped.dimensions();
-        let inner_radius_squared = inner_radius.powi(2);
-        let border_size = (self.border_percent / 100.0) * inner_radius;
-        let outer_radius_squared = (inner_radius + border_size).powi(2);
-        let center = Pos2::new((width / 2) as f32, (height / 2) as f32);
-        let mut masked = cropped.clone();
+    fn create_circle_border(
+        &self,
+        cropped: &RgbaImage, // selection crop (size = 2*inner_radius)
+        inner_radius: f32,
+        content_radius: f32, // inner_radius - border_size
+    ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+        let final_size = (2.0 * inner_radius).ceil() as u32;
+        let mut masked = ImageBuffer::new(final_size, final_size);
+        let final_center = Pos2::new(final_size as f32 / 2.0, final_size as f32 / 2.0);
 
-        // normalize angle to 0-360 degree and convert to radians
+        if content_radius <= 0.0 {
+            let colour = match self.color_kind {
+                ColorKind::SingleColour => Rgba::from(self.border_colour.to_srgba_unmultiplied()),
+                ColorKind::Gradient => Rgba::from(self.gradient_first_colour.to_srgba_unmultiplied()),
+            };
+            for pixel in masked.pixels_mut() {
+                *pixel = colour;
+                pixel[3] = 255;
+            }
+            return masked;
+        }
+
+        // scale the selection crop to the content area
+        let content_pixel_size = (2.0 * content_radius).ceil() as u32;
+        let scaled_content = resize(cropped, content_pixel_size, content_pixel_size, image::imageops::FilterType::Lanczos3);
+
+        let offset_x = (final_size as f32 - content_pixel_size as f32) / 2.0;
+        let offset_y = (final_size as f32 - content_pixel_size as f32) / 2.0;
+
+        // precompute gradient direction
         let angle_rad = (self.gradient_angle_deg % 360.0) * std::f32::consts::PI / 180.0;
         let dir_x = angle_rad.cos();
         let dir_y = angle_rad.sin();
-
-        // compute bounding box of the circle
-        let radius_plus_border = inner_radius + border_size;
-        let circle_min_x = center.x - radius_plus_border;
-        let circle_max_x = center.x + radius_plus_border;
-        let circle_min_y = center.y - radius_plus_border;
-        let circle_max_y = center.y + radius_plus_border;
-
-        // calculate projection extremes for normalization
-        let corners = [Pos2::new(circle_min_x, circle_min_y), Pos2::new(circle_max_x, circle_min_y), Pos2::new(circle_max_x, circle_max_y), Pos2::new(circle_min_x, circle_max_y)];
-
-        // find min and max values to normalise gradient positions
-        let (min_proj, max_proj) =  Self::calc_point_gradient_direction(center, dir_x, dir_y, &corners);
-
+        let corners = [Pos2::new(0.0, 0.0), Pos2::new(final_size as f32, 0.0), Pos2::new(final_size as f32, final_size as f32), Pos2::new(0.0, final_size as f32)];
+        let (min_proj, max_proj) = Self::calc_point_gradient_direction(final_center, dir_x, dir_y, &corners);
         let proj_range = max_proj - min_proj;
 
-        for y in 0..height {
-            for x in 0..width {
-                let pixel_pos = Pos2::new(x as f32, y as f32);
-                let distance_squared = (pixel_pos.x - center.x).powi(2) + (pixel_pos.y - center.y).powi(2);
-
+        for y in 0..final_size {
+            for x in 0..final_size {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let dx = px - final_center.x;
+                let dy = py - final_center.y;
+                let dist_sq = dx * dx + dy * dy;
                 let pixel = masked.get_pixel_mut(x, y);
-                if distance_squared <= inner_radius_squared {
-                    // inside the inner circle - keep the original pixel values
-                    pixel[3] = 255;
-                } else if distance_squared <= outer_radius_squared {
-                    // inside the border area - apply gradient
 
-                    // project the current point onto the gradient direction
-                    let proj = (pixel_pos.x - center.x) * dir_x + (pixel_pos.y - center.y) * dir_y;
-
-                    // normalize to 0.0-1.0 range
-                    let gradient_pos = if proj_range > 0.0 {
-                        (proj - min_proj) / proj_range
+                if dist_sq <= content_radius.powi(2) {
+                    // Inside content circle: sample from scaled_content
+                    let src_x = (px - offset_x).clamp(0.0, content_pixel_size as f32 - 1.0) as u32;
+                    let src_y = (py - offset_y).clamp(0.0, content_pixel_size as f32 - 1.0) as u32;
+                    if let Some(src_pixel) = scaled_content.get_pixel_checked(src_x, src_y) {
+                        *pixel = *src_pixel;
+                        pixel[3] = 255;
                     } else {
-                        0.5 // fallback
-                    };
-
-                    // apply gradient between start and end colours
-                    let (first_colour, last_colour) = match self.color_kind {
-                        ColorKind::SingleColour => {
-                            (self.border_colour, self.border_colour)
-                        }
+                        pixel[3] = 0;
+                    }
+                } else if dist_sq <= inner_radius.powi(2) {
+                    // Border ring
+                    let proj = dx * dir_x + dy * dir_y;
+                    let gradient_pos = if proj_range > 0.0 { (proj - min_proj) / proj_range } else { 0.5 };
+                    let color = match self.color_kind {
+                        ColorKind::SingleColour => Rgba::from(self.border_colour.to_srgba_unmultiplied()),
                         ColorKind::Gradient => {
-                            (self.gradient_first_colour, self.gradient_last_colour)
+                            let first = Rgba::from(self.gradient_first_colour.to_srgba_unmultiplied());
+                            let last = Rgba::from(self.gradient_last_colour.to_srgba_unmultiplied());
+                            lerp(first, last, gradient_pos)
                         }
                     };
-                    
-                    let first_colour_rgba = Rgba::from(first_colour.to_srgba_unmultiplied());
-                    let last_colour_rgba = Rgba::from(last_colour.to_srgba_unmultiplied());
-                    let color = lerp(first_colour_rgba, last_colour_rgba, gradient_pos);
-                    // our colour selection only allows RGB values, so we can use 255 here.
                     pixel.clone_from(&Rgba([color[0], color[1], color[2], 255]));
                 } else {
-                    // outside the outer border - transparent
                     pixel[3] = 0;
                 }
             }
@@ -310,23 +323,27 @@ impl AvatarCreatorApp<'_> {
     }
 
     #[allow(clippy::type_complexity)]
-    /// Generates the preview used in the active window to be display, as a texture.
+    /// Generates the preview used in the active window to be display, as a
+    /// texture.
     ///
-    /// It also provides the resulting image as an `ImageBuffer`, ready to be saved.
+    /// It also provides the resulting image as an `ImageBuffer`, ready to be
+    /// saved.
     fn generate_preview(&self, ctx: &Context) -> Result<(ImageBuffer<Rgba<u8>, Vec<u8>>, egui::TextureHandle), Box<dyn std::error::Error>> {
         let src_image = ImageReader::open(self.filepath.as_ref().expect("File path is set"))?.decode()?;
-
-        // selection will be square; therefore, we only care about one part for the scaling
         let scale_factor = self.original_image_dimension.expect("Dimensions have been set").x / self.scaled_image_dimension.expect("Dimensions have been set").x;
         let (start, stop) = self.try_get_points()?;
         let (scaled_start, scaled_stop) = (start * scale_factor, stop * scale_factor);
 
-        // calculate bounding box from points and border
         let inner_radius = scaled_start.distance(scaled_stop);
         let border_size = (self.border_percent / 100.0) * inner_radius;
-        let bounding_box = Rect::from_center_size(scaled_start, Vec2 { x: (inner_radius + border_size) * 2.0, y: (inner_radius + border_size) * 2.0 });
+        let content_radius = inner_radius - border_size;
 
-        // crop out image depending on the bounding box
+        // bounding box for cropping: only the selected shape
+        let selection_radius = match self.shape {
+            Shape::Circle | Shape::Square => inner_radius, // half‑side
+        };
+        let bounding_box = Rect::from_center_size(scaled_start, Vec2::splat(2.0 * selection_radius));
+
         let crop_x = bounding_box.left_top().x.max(0.0).min(src_image.width() as f32) as u32;
         let crop_y = bounding_box.left_top().y.max(0.0).min(src_image.height() as f32) as u32;
         let crop_width = bounding_box.width().min(src_image.width() as f32) as u32;
@@ -334,15 +351,15 @@ impl AvatarCreatorApp<'_> {
         let cropped_image = src_image.crop_imm(crop_x, crop_y, crop_width, crop_height).into_rgba8();
 
         let cropped_masked_image = match self.shape {
-            Shape::Circle => self.create_circle_border(&cropped_image, inner_radius),
-            Shape::Square => self.create_square_border(&cropped_image, inner_radius),
+            Shape::Circle => self.create_circle_border(&cropped_image, inner_radius, content_radius),
+            Shape::Square => self.create_square_border(&cropped_image, inner_radius, content_radius),
         };
 
         let window_dimensions = ctx.input(|i: &egui::InputState| i.screen_rect()).size();
         let preview_size =
             if self.resize { u32::from(((0.5 * (window_dimensions.y - TOTAL_UI_ELEMENT_HEIGHT)) as u16).max((0.5 * window_dimensions.x) as u16).min(self.resize_size)) } else { crop_width };
-
-        let final_image: ImageBuffer<Rgba<u8>, Vec<u8>> = resize(&cropped_masked_image, preview_size, preview_size, image::imageops::FilterType::Lanczos3);
+        let final_image =
+            if preview_size == cropped_masked_image.width() { cropped_masked_image.clone() } else { resize(&cropped_masked_image, preview_size, preview_size, image::imageops::FilterType::Lanczos3) };
 
         let pixels = final_image.as_raw();
         let texture = ctx.load_texture("preview", egui::ColorImage::from_rgba_unmultiplied([preview_size as usize, preview_size as usize], pixels), egui::TextureOptions::default());
@@ -400,33 +417,29 @@ impl AvatarCreatorApp<'_> {
             }
 
             // moving selection when using the right button
-            #[allow(clippy::collapsible_if)] // TODO: collapse once let chains stabilise in stable
-            if response.dragged_by(egui::PointerButton::Secondary) {
-                if let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut())
-                {
-                    *start += response.drag_delta();
-                    *stop += response.drag_delta();
-                }
+            if response.dragged_by(egui::PointerButton::Secondary)
+                && let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut())
+            {
+                *start += response.drag_delta();
+                *stop += response.drag_delta();
             }
 
             match (self.drag_start, self.drag_stop) {
                 (Some(start), Some(stop)) => {
                     let painter = ui.painter_at(response.rect);
-
-                    // centre marker
-                    let radius = 1.0;
                     let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
-                    painter.circle(circle_center, radius, Color32::TRANSPARENT, Stroke::new(1.0, Color32::RED));
+                    let selection_radius = start.distance(stop);
+                    painter.circle(circle_center, 1.0, Color32::TRANSPARENT, Stroke::new(1.0, Color32::RED));
 
-                    // offset the circle's position by the second image's top-left corner
-                    let center_to_inside_border = start.distance(stop);
-                    let bounding_box = match self.shape {
-                        Shape::Circle => Rect::from_center_size(circle_center, Vec2 { x: (center_to_inside_border + self.border_percent) * 2.0, y: (center_to_inside_border + self.border_percent) * 2.0 }),
-                        Shape::Square => Rect::from_center_size(circle_center, Vec2 { x: center_to_inside_border * 2.0, y: center_to_inside_border * 2.0 }) // for the square we just use the selected box
-                    };
-                    painter.rect(bounding_box, CornerRadius::ZERO, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN), StrokeKind::Outside);
-                    if self.shape == Shape::Circle {
-                        painter.circle(circle_center, center_to_inside_border, Color32::TRANSPARENT, Stroke::new(self.border_percent, self.border_colour));
+                    match self.shape {
+                        Shape::Circle => {
+                            painter.circle(circle_center, selection_radius, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN));
+                        }
+                        Shape::Square => {
+                            let half = selection_radius;
+                            let rect = Rect::from_center_size(circle_center, Vec2::splat(2.0 * half));
+                            painter.rect(rect, CornerRadius::ZERO, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN), StrokeKind::Outside);
+                        }
                     }
                 }
                 (Some(start), None) => {
@@ -443,15 +456,12 @@ impl AvatarCreatorApp<'_> {
             }
 
             // after handling the drag and selection, generate a preview
-            #[allow(clippy::collapsible_if)] // TODO: collapse once let chains stabilise in stable
-            if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop) {
-                if let Ok((preview_image, preview_texture)) = self.generate_preview(ctx)
-                {
-                    self.preview_texture = Some(preview_texture);
-                    self.preview_image = Some(preview_image);
-                }
+            if let (Some(_start), Some(_stop)) = (self.drag_start, self.drag_stop)
+                && let Ok((preview_image, preview_texture)) = self.generate_preview(ctx)
+            {
+                self.preview_texture = Some(preview_texture);
+                self.preview_image = Some(preview_image);
             }
-              
         });
     }
 
@@ -470,7 +480,8 @@ impl AvatarCreatorApp<'_> {
                     ui.add_enabled(self.color_kind == ColorKind::Gradient, Slider::new(&mut self.gradient_angle_deg, 0.0..=360.0).drag_value_speed(0.1));
                 });
                 if !(self.drag_start.is_some() && self.drag_stop.is_some()) {
-                    // disables the elements that follow this point on until the "vertical" group ends
+                    // disables the elements that follow this point on until the "vertical" group
+                    // ends
                     ui.disable();
                 }
                 let generate_response = ui.button("Generate avatar");
@@ -553,7 +564,8 @@ impl AvatarCreatorApp<'_> {
         }
     }
 
-    /// ensures that the image data is loaded when an image is selected, so it can be displayed
+    /// ensures that the image data is loaded when an image is selected, so it
+    /// can be displayed
     pub(crate) fn load_image_to_state(&mut self, image_path: &Path) {
         self.filepath = Some(image_path.to_path_buf());
         let image_path = image_path.to_str().expect("Image path is UTF-8 string");
@@ -566,15 +578,12 @@ impl AvatarCreatorApp<'_> {
 
     /// UI element to open the file and load the data
     fn file_opening(&mut self, ui: &mut Ui) {
-        #[allow(clippy::collapsible_if)] // TODO: collapse once let chains stabilise in stable
-        if ui.button("Load Image").clicked() {
-            if let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file()
-            {
-                self.load_image_to_state(&image_path);
-                // TODO: Windows file handling
-            }
+        if ui.button("Load Image").clicked()
+            && let Some(image_path) = FileDialog::new().add_filter("Supported image formats", SUPPORTED_IMAGE_FORMATS).pick_file()
+        {
+            self.load_image_to_state(&image_path);
+            // TODO: Windows file handling
         }
-            
     }
 
     /// UI element to reset the selection
@@ -613,7 +622,6 @@ fn lerp(first: Rgba<u8>, second: Rgba<u8>, pos: f32) -> Rgba<u8> {
         return first;
     }
     let pos = pos.clamp(0.0, 1.0);
-    
     let red = (f32::from(first[0]) * pos) + (f32::from(second[0]) * (1.0 - pos));
     let green = (f32::from(first[1]) * pos) + (f32::from(second[1]) * (1.0 - pos));
     let blue = (f32::from(first[2]) * pos) + (f32::from(second[2]) * (1.0 - pos));
