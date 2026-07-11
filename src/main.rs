@@ -40,7 +40,12 @@ fn main() -> eframe::Result<()> {
             let file = args[1].as_str();
             for ext in SUPPORTED_IMAGE_FORMATS {
                 if file.to_ascii_lowercase().ends_with(ext) {
-                    default_state.load_image_to_state(Path::new(file));
+                    let path = Path::new(file);
+                    if path.exists() {
+                        default_state.load_image_to_state(path);
+                    } else {
+                        warn!("Path {file} does not exist.");
+                    }
                     break;
                 }
             }

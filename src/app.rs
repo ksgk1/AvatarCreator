@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, CentralPanel, Color32, CornerRadius, Image, Popup, Pos2, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Ui, Vec2};
+use eframe::egui::{self, CentralPanel, Color32, CornerRadius, DragValue, Image, Popup, Pos2, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Ui, Vec2};
 use image::imageops::resize;
 use image::{ImageBuffer, ImageReader, Rgba, RgbaImage};
 use rfd::FileDialog;
@@ -12,10 +12,10 @@ use crate::SUPPORTED_IMAGE_FORMATS;
 /// The height of all UI elements that are not the image.
 ///
 /// Includes all labels, buttons and colour picker
-const TOTAL_UI_ELEMENT_HEIGHT: f32 = 250.0;
+const TOTAL_UI_ELEMENT_HEIGHT: f32 = 300.0;
 /// Default border size (in percent)
-const BORDER_DEFAULT_PERCENT: f32 = 15.0;
-const MAX_BORDER_PERCENT: f32 = 100.0;
+const BORDER_DEFAULT_PERCENT: u8 = 10;
+const MAX_BORDER_PERCENT: u8 = 100;
 
 #[derive(Error, Debug)]
 enum Error {
@@ -27,7 +27,8 @@ pub struct AvatarCreatorApp<'a> {
     filepath:                 Option<PathBuf>,
     drag_start:               Option<Pos2>,
     drag_stop:                Option<Pos2>,
-    border_percent:           f32,
+    selection_radius:         f32,
+    border_percent:           u8,
     border_colour:            Color32,
     original_image_dimension: Option<Vec2>,
     scaled_image_dimension:   Option<Vec2>,
@@ -70,6 +71,7 @@ impl Default for AvatarCreatorApp<'_> {
             filepath:                 None,
             drag_start:               None,
             drag_stop:                None,
+            selection_radius:         0.0,
             border_percent:           BORDER_DEFAULT_PERCENT,
             border_colour:            Color32::WHITE,
             original_image_dimension: None,
@@ -140,7 +142,19 @@ impl AvatarCreatorApp<'_> {
 
     fn generate_final_file_name(&self) -> String {
         let filename = self.filepath.as_ref().expect("File path is set").display();
-        let resize_text = if self.resize { format!("_resized_{}", self.resize_size) } else { String::new() };
+        let radius = self.selection_radius.round() as u16;
+        let resize_text = if self.resize {
+            format!(
+                "_{}_{}_{}_{}_resized_{}",
+                self.drag_start.unwrap_or_default().x.round() as u16,
+                self.drag_start.unwrap_or_default().y.round() as u16,
+                radius,
+                self.border_percent,
+                self.resize_size
+            )
+        } else {
+            format!("_{}_{}_{}_{}", self.drag_start.unwrap_or_default().x.round() as u16, self.drag_start.unwrap_or_default().y.round() as u16, radius, self.border_percent)
+        };
         format!("{filename}{resize_text}_cropped.png")
     }
 
@@ -333,7 +347,7 @@ impl AvatarCreatorApp<'_> {
         let (scaled_start, scaled_stop) = (start * scale_factor, stop * scale_factor);
 
         let inner_radius = scaled_start.distance(scaled_stop);
-        let border_size = (self.border_percent / 100.0) * inner_radius;
+        let border_size = (f32::from(self.border_percent) / 100.0) * inner_radius;
         let content_radius = inner_radius - border_size;
 
         // bounding box for cropping: only the selected shape
@@ -412,30 +426,42 @@ impl AvatarCreatorApp<'_> {
 
             if response.dragged_by(egui::PointerButton::Primary) {
                 self.drag_stop = Some(ui.input(|i| i.pointer.interact_pos().unwrap_or_default()) - response.rect.left_top().to_vec2());
+                self.selection_radius = self
+                    .drag_start
+                    .expect("We should only be here, if we have set the values already.")
+                    .distance(self.drag_stop.expect("We should only be here, if we have set the values already."))
+                    .round();
             }
 
             // moving selection when using the right button
             if response.dragged_by(egui::PointerButton::Secondary)
                 && let (Some(start), Some(stop)) = (self.drag_start.as_mut(), self.drag_stop.as_mut())
             {
-                *start += response.drag_delta();
-                *stop += response.drag_delta();
+                let imsize = self.scaled_image_dimension.expect("We are in the UI, where the image has already been loaded.");
+                // ensure to stay within the borders of the image element
+                let delta = response.drag_delta();
+                let dx = delta.x;
+                let dy = delta.y;
+                if ((start.x + self.selection_radius + dx < imsize.x) && (start.y + self.selection_radius + dy < imsize.y))
+                    && ((start.x - self.selection_radius + dx > 0.0) && (start.y - self.selection_radius + dy > 0.0))
+                {
+                    *start += delta;
+                    *stop += delta;
+                }
             }
 
             match (self.drag_start, self.drag_stop) {
-                (Some(start), Some(stop)) => {
+                (Some(start), Some(_)) => {
                     let painter = ui.painter_at(response.rect);
                     let circle_center = response.rect.left_top() + Vec2 { x: start.x, y: start.y };
-                    let selection_radius = start.distance(stop);
                     painter.circle(circle_center, 1.0, Color32::TRANSPARENT, Stroke::new(1.0, Color32::RED));
 
                     match self.shape {
                         Shape::Circle => {
-                            painter.circle(circle_center, selection_radius, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN));
+                            painter.circle(circle_center, self.selection_radius, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN));
                         }
                         Shape::Square => {
-                            let half = selection_radius;
-                            let rect = Rect::from_center_size(circle_center, Vec2::splat(2.0 * half));
+                            let rect = Rect::from_center_size(circle_center, Vec2::splat(2.0 * self.selection_radius));
                             painter.rect(rect, CornerRadius::ZERO, Color32::TRANSPARENT, Stroke::new(1.0, Color32::GREEN), StrokeKind::Outside);
                         }
                     }
@@ -469,7 +495,23 @@ impl AvatarCreatorApp<'_> {
             ui.vertical(|ui| {
                 self.shape_selection(ui);
                 ui.label("Border width percentage:");
-                ui.add(Slider::new(&mut self.border_percent, 0.0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
+                ui.add(Slider::new(&mut self.border_percent, 0..=MAX_BORDER_PERCENT).drag_value_speed(1.0));
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label("Position:");
+                        ui.horizontal(|ui| {
+                            ui.add_enabled(false, DragValue::new(&mut self.drag_start.unwrap_or_default().x.round()).max_decimals(0));
+                            ui.add_enabled(false, DragValue::new(&mut self.drag_start.unwrap_or_default().y.round()).max_decimals(0));
+                        });
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("Radius:");
+                        ui.horizontal(|ui| {
+                            let mut radius = if let (Some(start), Some(stop)) = (self.drag_start, self.drag_stop) { start.distance(stop).round() as usize } else { 0 };
+                            ui.add_enabled(false, DragValue::new(&mut radius).max_decimals(0));
+                        });
+                    });
+                });
                 ui.checkbox(&mut self.resize, RichText::new(format!("Resize to {:>4} x {:>4} pixels", self.resize_size, self.resize_size)).monospace());
                 ui.add_enabled(self.resize, Slider::new(&mut self.resize_size, 100..=1000));
                 self.border_coloring_selection(ui);
