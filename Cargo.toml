@@ -1,24 +1,37 @@
 [package]
     edition = "2024"
     name    = "avatar-creator"
-    version = "0.6.2"
+    version = "0.7.0"
+    license = "MIT"
 
 [[bin]]
     name = "avatar-creator"
     path = "src/main.rs"
 
 [dependencies]
-    eframe             = { version = "0.35", default-features = false, features = ["default_fonts", "wayland", "x11", "glow"] }
-    egui_extras        = { version = "0.35", features = ["file", "image"] }
-    image              = { version = "0.25", default-features = false, features = ["jpeg", "png", "rayon", "webp"] }
-    rfd                = { version = "0.17" }
-    thiserror          = { version = "2.0" }
-    tracing            = { version = "0.1", default-features = false }
-    tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "env-filter"] }
-    winit              = { version = "0.30", default-features = true }
+    eframe             = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow"] }
+    egui_extras        = { version = "0.37.0", default-features = false, features = ["file", "image"] }
+    image              = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "rayon", "webp"] }
+    png                = { version = "0.18.1", default-features = false }
+    rfd                = { version = "0.17.2", default-features = false }
+    thiserror          = { version = "2.0.21", default-features = false, features = ["std"] }
+    tracing            = { version = "0.1.44", default-features = false }
+    tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "fmt", "env-filter"] }
+
+# Wayland and X11 support only exist on Linux, on Windows and macOS eframe
+# uses the native winit backend and rfd the native file dialogs.
+[target.'cfg(target_os = "linux")'.dependencies]
+    eframe = { version = "0.37.0", default-features = false, features = ["wayland", "x11"] }
+    rfd    = { version = "0.17.2", default-features = false, features = ["xdg-portal", "wayland"] }
 
 [lints.clippy]
     cast_possible_truncation = "allow"
     cast_precision_loss      = "allow"
     cast_sign_loss           = "allow"
-    pedantic                 = { priority = -1, level = "deny" }
+    complexity               = { level = "deny", priority = -1 }
+    correctness              = { level = "deny", priority = -1 }
+    pedantic                 = { level = "deny", priority = -1 }
+    perf                     = { level = "deny", priority = -1 }
+    style                    = { level = "deny", priority = -1 }
+    expect_used              = "forbid"
+    unwrap_used              = "forbid"

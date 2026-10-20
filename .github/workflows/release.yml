@@ -1,84 +1,104 @@
-name: Build Release
+name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*'  # Only triggers on version tags
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write  # Required to create releases
+  contents: read
+
+env:
+  ARTEFACT_NAME: "avatar-creator"
+  BINARY_NAME: "avatar-creator"
 
 jobs:
-  build-linux:
-    name: Build for Linux
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get purge man-db && sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Test
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.ref }}".StartsWith("refs/tags/v")) { "${{ github.ref_name }}" } else { "${{ github.sha }}".Substring(0, 7) }
+          New-Item -ItemType Directory -Path release -Force
+          Copy-Item -Path "target\x86_64-pc-windows-msvc\release\$env:ARTEFACT_NAME.exe" -Destination "release\$env:BINARY_NAME-$version.exe"
+
+      - name: Package (Linux)
+        if: matrix.target != 'x86_64-pc-windows-msvc'
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            version="${{ github.ref_name }}"
+          else
+            version=$(echo "${{ github.sha }}" | cut -c1-7)
+          fi
+          mkdir -p release
+          cp target/${{ matrix.target }}/release/$ARTEFACT_NAME release/$BINARY_NAME-$version-${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.target }}
+          path: release/
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v3
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: release
 
-      - name: Build project
-        run: cargo build --release
+      - name: Generate checksums
+        run: cd release && sha256sum */* > checksums.txt
 
-      - name: Rename binary with version
-        run: |
-          version=${{ github.ref_name }}
-          cp target/release/avatar-creator target/release/avatar-creator-$version-linux
-
-      - name: Upload binary to release
-        uses: softprops/action-gh-release@v1
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
-            target/release/avatar-creator-${{ github.ref_name }}-linux
+            release/x86_64-unknown-linux-musl/${{ env.BINARY_NAME }}-${{ github.ref_name }}-x86_64-unknown-linux-musl
+            release/x86_64-unknown-linux-gnu/${{ env.BINARY_NAME }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu
+            release/x86_64-pc-windows-msvc/${{ env.BINARY_NAME }}-${{ github.ref_name }}.exe
+            release/checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-windows:
-    name: Build for Windows
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: |
-            C:\Users\runneradmin\.cargo\registry
-            C:\Users\runneradmin\.cargo\git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build project
-        run: cargo build --release
-
-      - name: Rename binary with version
-        run: |
-          copy target/release/avatar-creator.exe target/release/avatar-creator-${{ github.ref_name }}-windows.exe
-
-      - name: Upload binary to release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            target/release/avatar-creator-${{ github.ref_name }}-windows.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
